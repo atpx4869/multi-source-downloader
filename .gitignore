@@ -28,3 +28,6 @@ downloads/
 *.log
 *.exe
 *.zip
+.auth_cache
+debug_*.png
+*.html

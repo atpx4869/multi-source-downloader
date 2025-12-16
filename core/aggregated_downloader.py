@@ -101,13 +101,19 @@ class AggregatedDownloader:
         """合并去重，确保 source_meta 始终为 {源名: meta} 结构；同一标准号只保留一条。"""
         for item in items:
             key = self._norm_std_no(item.std_no)
-            # 确保当前 item 的 meta 包装成 map
-            if not (isinstance(item.source_meta, dict) and src_name in item.source_meta):
-                item.source_meta = {src_name: item.source_meta}
+            
+            # 获取原始 meta 数据
+            original_meta = item.source_meta if isinstance(item.source_meta, dict) else {}
+            
+            # 构建该源的 meta 数据，确保包含 _has_pdf
+            meta_data = original_meta.copy() if isinstance(original_meta, dict) else {}
+            meta_data["_has_pdf"] = item.has_pdf  # 保存该源的 has_pdf 状态
+            
             if key in existing:
                 cur = existing[key]
                 if src_name not in cur.sources:
                     cur.sources.append(src_name)
+                # 任意源有 PDF 则显示有 PDF
                 cur.has_pdf = cur.has_pdf or item.has_pdf
                 # 名称保留更长的，避免空或简写
                 if len(item.name or "") > len(cur.name or ""):
@@ -121,21 +127,19 @@ class AggregatedDownloader:
                 # 合并 meta，保留已存在的，同时更新本源的
                 if not isinstance(cur.source_meta, dict):
                     cur.source_meta = {}
-                cur.source_meta[src_name] = item.source_meta.get(src_name, item.source_meta)
+                cur.source_meta[src_name] = meta_data
             else:
                 item.sources = list(dict.fromkeys(item.sources or [src_name]))
+                # 确保新项的 source_meta 格式正确
+                item.source_meta = {src_name: meta_data}
                 existing[key] = item
 
     def search(self, keyword: str, **kwargs) -> List[Standard]:
         combined: Dict[str, Standard] = {}
-        available_sources = self.get_available_sources()
         
-        # 如果没有可用源，自动检查一次
-        if not available_sources:
-            self.check_source_health(force=True)
-            available_sources = self.get_available_sources()
-        
-        for src in available_sources:
+        # 直接使用所有启用的源，不依赖健康检查
+        # 健康检查仅用于UI显示，不影响搜索
+        for src in self.sources:
             try:
                 items = src.search(keyword, **kwargs)
             except TypeError:
@@ -163,7 +167,7 @@ class AggregatedDownloader:
         )
 
     def download(self, item: Standard, log_cb=None) -> tuple[Path | None, list[str]]:
-        """按优先级下载，返回(路径或None, 日志列表)。log_cb 用于实时输出。"""
+        """按优先级下载（GBW > BY > ZBY），逐个尝试直到成功。返回(路径或None, 日志列表)。"""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logs: list[str] = []
         seen_item: set[str] = set()
@@ -184,11 +188,23 @@ class AggregatedDownloader:
             logs.append(line)
             filtered_cb(line)
 
-        for src in self.sources:
-            if src.name not in item.sources:
-                continue
+        # 获取该标准在各源的 PDF 状态（用于显示）
+        meta_map = item.source_meta if isinstance(item.source_meta, dict) else {}
+        
+        # 按优先级顺序获取可用的源
+        ordered_sources = [src for src in self.sources if src.name in item.sources]
+        
+        if not ordered_sources:
+            emit("没有可用的下载源")
+            return None, logs
+
+        # 按优先级逐个尝试所有源（兜底机制）
+        for src in ordered_sources:
             clone = self._clone_for_source(item, src.name)
-            emit(f"{src.name}: 开始尝试")
+            src_meta = meta_map.get(src.name, {})
+            src_has_pdf = src_meta.get("_has_pdf", False) if isinstance(src_meta, dict) else False
+            pdf_hint = "有PDF" if src_has_pdf else "无PDF标记"
+            emit(f"{src.name}: 开始尝试 ({pdf_hint})")
             try:
                 path = None
                 extra_logs: list[str] = []
@@ -208,8 +224,8 @@ class AggregatedDownloader:
                     emit(f"{src.name}: 成功 -> {path}")
                     return path, logs
                 else:
-                    emit(f"{src.name}: 未获取到文件")
+                    emit(f"{src.name}: 未获取到文件，尝试下一个源")
             except Exception as exc:
-                emit(f"{src.name}: 失败 -> {exc}")
+                emit(f"{src.name}: 失败 -> {exc}，尝试下一个源")
         emit("所有来源均未成功")
         return None, logs
