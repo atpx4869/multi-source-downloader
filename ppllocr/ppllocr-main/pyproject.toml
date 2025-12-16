@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppllocr"
+version = "1.2"
+description = "High-performance Robust OCR powered by Liveless"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Liveless", email = "zhongxiaoma2027@gmail.com"},
+    {name = "Zjyjoe", email = "309682363@qq.com"}
+]
+dependencies = [
+    "numpy",
+    "opencv-python-headless",  # 服务器端用headless，避免GUI依赖问题
+    "onnxruntime"              # 默认安装CPU版，GPU版由用户自己选装
+]
+
+[project.urls]
+"Homepage" = "https://github.com/gitpetyr/ppllocr"
+"Bug Tracker" = "https://github.com/gitpetyr/ppllocr/issues"
+
+[tool.setuptools.package-data]
+ppllocr = ["assets/*.onnx"]  # 关键：确保 ONNX 被打包

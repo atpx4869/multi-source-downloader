@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv*/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+downloads/
+*.exe
+*.zip
