@@ -1,4 +1,4 @@
-name: Build
+name: Build Windows x64
 
 on:
   push:
@@ -6,63 +6,80 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-x64:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        arch: [x86, x64]
     
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
       with:
         lfs: true
     
-    - name: Setup Python (${{ matrix.arch }})
+    - name: Setup Python 3.11 (x64)
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        architecture: ${{ matrix.arch }}
+        architecture: x64
     
     - name: Install dependencies
       run: |
-        pip install --upgrade pip
-        pip install PySide6 pandas requests img2pdf Pillow numpy onnxruntime pyinstaller
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
     
-    - name: Build
+    - name: Install Playwright browsers
       run: |
-        pyinstaller --onefile --windowed --name "StandardDownloader-${{ matrix.arch }}" `
+        pip install playwright
+        python -m playwright install chromium
+    
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --windowed --name "StandardDownloader-x64" `
           --add-data "core;core" `
           --add-data "sources;sources" `
           --add-data "ppllocr;ppllocr" `
           --hidden-import=PySide6 `
+          --hidden-import=PySide6.QtCore `
+          --hidden-import=PySide6.QtGui `
+          --hidden-import=PySide6.QtWidgets `
           --hidden-import=pandas `
           --hidden-import=requests `
           --hidden-import=onnxruntime `
+          --hidden-import=img2pdf `
+          --hidden-import=PIL `
+          --hidden-import=numpy `
+          --hidden-import=playwright `
+          --hidden-import=playwright.sync_api `
           --collect-all=PySide6 `
+          --collect-all=onnxruntime `
+          --collect-all=playwright `
           desktop_app.py
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: StandardDownloader-${{ matrix.arch }}
-        path: dist/*.exe
+        name: StandardDownloader-x64
+        path: dist/StandardDownloader-x64.exe
         retention-days: 30
 
   release:
-    needs: build
+    needs: build-x64
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     
     steps:
-    - uses: actions/download-artifact@v4
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
       with:
+        name: StandardDownloader-x64
         path: artifacts
-        merge-multiple: true
     
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
         files: artifacts/*.exe
         generate_release_notes: true
+        draft: false
+        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
