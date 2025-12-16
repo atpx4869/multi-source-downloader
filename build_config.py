@@ -17,7 +17,7 @@ def build_app():
     build_dir = project_root / "build"
     
     print("=" * 60)
-    print("🔨 开始构建应用...")
+    print("Building application...")
     print("=" * 60)
     
     # PyInstaller 参数
@@ -26,15 +26,28 @@ def build_app():
         "-m", "PyInstaller",
         "--onefile",                          # 单文件模式
         "--windowed",                         # 窗口模式（无命令行）
-        "--icon=assets/app.ico" if (project_root / "assets" / "app.ico").exists() else None,
         "--name=标准下载",                     # 应用名称
         "--add-data=core:core",               # 添加核心模块
+        "--add-data=sources:sources",         # 添加数据源模块
         "--add-data=ppllocr:ppllocr",         # 添加 OCR 模块
         "--hidden-import=core",
+        "--hidden-import=core.models",
+        "--hidden-import=core.aggregated_downloader",
+        "--hidden-import=sources",
+        "--hidden-import=sources.gbw",
+        "--hidden-import=sources.by",
+        "--hidden-import=sources.zby",
         "--hidden-import=ppllocr",
+        "--hidden-import=ppllocr.inference",
         "--hidden-import=onnxruntime",
+        "--hidden-import=requests",
+        "--hidden-import=pandas",
+        "--hidden-import=PySide6",
         "--collect-all=streamlit",
         "--collect-all=pandas",
+        "--collect-all=PySide6",
+        "--exclude-module=tests",
+        "--exclude-module=pytest",
         "--clean",
         "--noconfirm",
         str(project_root / "desktop_app.py"),
@@ -52,17 +65,17 @@ def build_app():
             exe_path = dist_dir / "标准下载.exe"
             if exe_path.exists():
                 print("\n" + "=" * 60)
-                print(f"✅ 构建成功！")
-                print(f"📦 可执行文件: {exe_path}")
-                print(f"📊 文件大小: {exe_path.stat().st_size / (1024*1024):.1f} MB")
+                print("Build successful!")
+                print(f"Executable: {exe_path}")
+                print(f"File size: {exe_path.stat().st_size / (1024*1024):.1f} MB")
                 print("=" * 60 + "\n")
                 return True
         else:
-            print(f"❌ 构建失败，返回码: {result.returncode}")
+            print(f"Build failed, return code: {result.returncode}")
             return False
             
     except Exception as e:
-        print(f"❌ 构建出错: {e}")
+        print(f"Build error: {e}")
         return False
 
 if __name__ == "__main__":
@@ -70,7 +83,7 @@ if __name__ == "__main__":
     try:
         import PyInstaller
     except ImportError:
-        print("📥 安装 PyInstaller...")
+        print("Installing PyInstaller...")
         subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
     
     success = build_app()
