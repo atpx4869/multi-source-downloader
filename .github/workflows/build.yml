@@ -9,16 +9,27 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    strategy:
+      matrix:
+        python-arch: [x86, x64]
+        include:
+          - python-arch: x86
+            arch-name: '32bit'
+            pyinstaller-arch: ''
+          - python-arch: x64
+            arch-name: '64bit'
+            pyinstaller-arch: ''
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         lfs: true
     
-    - name: Set up Python
+    - name: Set up Python ${{ matrix.arch-name }}
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
+        architecture: ${{ matrix.python-arch }}
     
     - name: Install dependencies
       run: |
@@ -31,13 +42,23 @@ jobs:
         choco install nsis -y
         echo "NSIS_PATH=C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
     
-    - name: Build executable with PyInstaller
-      run: python build_config.py
+    - name: Build executable with PyInstaller (${{ matrix.arch-name }})
+      run: |
+        $env:PYINSTALLER_ARCH = "${{ matrix.arch-name }}"
+        python build_config.py
     
     - name: Rename executable
       run: |
         cd dist
-        Rename-Item -Path "标准下载.exe" -NewName "app.exe" -Force
+        Get-ChildItem "标准下载.exe" -ErrorAction SilentlyContinue | Rename-Item -NewName "app-${{ matrix.arch-name }}.exe" -Force
+        Get-ChildItem "app.exe" -ErrorAction SilentlyContinue | Rename-Item -NewName "app-${{ matrix.arch-name }}.exe" -Force
+    
+    - name: Update NSIS for architecture
+      run: |
+        $content = Get-Content installer.nsi -Encoding UTF8
+        $content = $content -replace 'OutFile "dist\\Installer.exe"', 'OutFile "dist\Installer-${{ matrix.arch-name }}.exe"'
+        $content = $content -replace 'File /oname=app.exe "dist\\app.exe"', 'File /oname=app.exe "dist\app-${{ matrix.arch-name }}.exe"'
+        Set-Content installer.nsi $content -Encoding UTF8
     
     - name: Build NSIS installer
       run: |
@@ -46,21 +67,30 @@ jobs:
     - name: List output files
       run: dir dist\*.exe
     
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          dist/Installer.exe
-          dist/app.exe
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: windows-installer
+        name: windows-installer-${{ matrix.arch-name }}
         path: dist/*.exe
         retention-days: 30
+  
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: release-files
+        merge-multiple: true
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release-files/*.exe
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
