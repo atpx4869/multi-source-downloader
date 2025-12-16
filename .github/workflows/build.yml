@@ -44,6 +44,7 @@ jobs:
           --hidden-import=PySide6.QtGui `
           --hidden-import=PySide6.QtWidgets `
           --hidden-import=pandas `
+          --hidden-import=pandas.core `
           --hidden-import=requests `
           --hidden-import=onnxruntime `
           --hidden-import=img2pdf `
@@ -52,6 +53,8 @@ jobs:
           --hidden-import=playwright `
           --hidden-import=playwright.sync_api `
           --collect-all=PySide6 `
+          --collect-all=pandas `
+          --collect-all=numpy `
           --collect-all=onnxruntime `
           --collect-all=playwright `
           desktop_app.py
