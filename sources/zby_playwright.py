@@ -34,6 +34,16 @@ class ZBYSource:
         except ImportError:
             pass
 
+    def is_available(self, timeout: int = 6) -> bool:
+        """快速检测 ZBY 服务是否可达（用于健康检查）。"""
+        try:
+            if not getattr(self, 'base_url', None):
+                return False
+            r = self.session.get(self.base_url, timeout=timeout)
+            return 200 <= getattr(r, 'status_code', 0) < 400
+        except Exception:
+            return False
+
     def search(self, keyword: str, page: int = 1, page_size: int = 20, **kwargs) -> List[Standard]:
         items = []
         if not self._playwright_available:

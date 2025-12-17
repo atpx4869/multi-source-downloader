@@ -21,6 +21,20 @@ try:
             self.output_dir = Path(output_dir)
             self.client = StandardDownloader(output_dir=self.output_dir)
 
+        def is_available(self, timeout: int = 6) -> bool:
+            """检测 ZBY 源是否可用：优先使用 client 提供的检测方法或尝试访问 base_url 属性。"""
+            try:
+                if hasattr(self.client, 'is_available') and callable(getattr(self.client, 'is_available')):
+                    return bool(self.client.is_available())
+                # 如果 client 提供 base_url，则尝试请求
+                if hasattr(self.client, 'base_url'):
+                    import requests
+                    r = requests.get(getattr(self.client, 'base_url'), timeout=timeout)
+                    return 200 <= getattr(r, 'status_code', 0) < 400
+                return True
+            except Exception:
+                return False
+
         def search(self, keyword: str, **kwargs) -> List[Standard]:
             data = self.client.search(keyword, **kwargs)
             rows = data.get("rows") or []

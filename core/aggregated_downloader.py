@@ -64,38 +64,82 @@ class AggregatedDownloader:
         for src in self.sources:
             name = src.name
             health = self.health_cache.get(name, SourceHealth(name))
-            
-            # 有缓存且未强制检查则跳过
+
+            # 有缓存且未强制检查则跳过（缓存有效期 60s）
             if not force and health.last_check > 0 and (time.time() - health.last_check < 60):
                 continue
-            
-            # 执行健康检查
+
+            # 执行健康检查：优先调用源自身提供的检查方法 is_available()
+            start = time.time()
             try:
-                start = time.time()
-                # 不同源的检查方式不同
-                if name == "GBW":
-                    # GBW 简单检查：尝试请求搜索接口
+                available = False
+                # 优先使用源提供的检测接口
+                if hasattr(src, 'is_available') and callable(getattr(src, 'is_available')):
+                    try:
+                        available = bool(src.is_available())
+                    except Exception as e:
+                        # 源内部检查可能抛错，记录并回退到通用检查
+                        available = False
+                        health.error = f"is_available error: {e}"
+
+                # 若没有 is_available 或调用失败，使用更可靠的 GET 请求检测具体的服务端点
+                if not available:
                     import requests
-                    resp = requests.head("https://std.samr.gov.cn", timeout=5)
-                    resp.raise_for_status()
-                elif name == "BY":
-                    # BY 检查：需要能成功初始化会话
-                    # 已在 __init__ 时测试过了
-                    pass
-                elif name == "ZBY":
-                    # ZBY 检查：简单的 API 调用
-                    import requests
-                    resp = requests.head("https://bz.zhenggui.vip", timeout=5)
-                    resp.raise_for_status()
-                
+
+                    def try_get(url, timeout=6):
+                        try:
+                            r = requests.get(url, timeout=timeout, allow_redirects=True)
+                            return r
+                        except Exception:
+                            return None
+
+                    # 针对已知源使用更具体的检测 URL 和简单重试
+                    candidates = []
+                    if getattr(src, 'base_url', None):
+                        # 优先检测源的 base_url 或其搜索接口
+                        base = getattr(src, 'base_url')
+                        if name == 'GBW':
+                            candidates = [f"{base}/gb/search/gbQueryPage?searchText=test&pageNum=1&pageSize=1", base]
+                        else:
+                            candidates = [base]
+                    else:
+                        # 兜底到常规域名（可能不可用）
+                        if name == 'GBW':
+                            candidates = ['https://std.samr.gov.cn']
+                        elif name == 'ZBY':
+                            candidates = ['https://bz.zhenggui.vip']
+                        else:
+                            candidates = []
+
+                    resp = None
+                    # 简单重试策略：尝试最多 2 次每个候选 URL
+                    for url in candidates:
+                        for _ in range(2):
+                            resp = try_get(url)
+                            if resp is not None and resp.status_code >= 200 and resp.status_code < 500:
+                                break
+                        if resp is not None:
+                            break
+
+                    if resp is None:
+                        available = False
+                        if not health.error:
+                            health.error = 'no response'
+                    else:
+                        # 将 2xx/3xx 视为可用，4xx/5xx 视为不可用
+                        available = 200 <= resp.status_code < 400
+                        if not available:
+                            health.error = f'status {resp.status_code}'
+
                 health.response_time = time.time() - start
-                health.available = True
-                health.error = ""
+                health.available = bool(available)
+                if health.available and not health.error:
+                    health.error = ''
             except Exception as exc:
                 health.available = False
-                health.error = str(exc)[:50]
+                health.error = str(exc)[:200]
                 health.response_time = 0.0
-            
+
             health.last_check = time.time()
             self.health_cache[name] = health
         

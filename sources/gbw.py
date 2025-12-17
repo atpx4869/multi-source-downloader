@@ -383,3 +383,12 @@ class GBWSource:
         except Exception as e:
             emit(f"GBW: CAPTCHA 处理失败: {e}")
             return None, logs
+
+    def is_available(self, timeout: int = 6) -> bool:
+        """检查 GBW 服务是否可访问（用于快速健康检测）"""
+        try:
+            test_url = f"{self.base_url}/gb/search/gbQueryPage?searchText=test&pageNum=1&pageSize=1"
+            resp = self.session.get(test_url, timeout=timeout)
+            return 200 <= getattr(resp, 'status_code', 0) < 400
+        except Exception:
+            return False
