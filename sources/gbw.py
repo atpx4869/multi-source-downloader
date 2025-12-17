@@ -9,6 +9,7 @@ from typing import List, Callable
 
 from core.models import Standard
 from .gbw_download import get_hcno, download_with_ocr, sanitize_filename
+from .http_search import call_api, find_rows
 
 
 class GBWSource:
@@ -61,13 +62,11 @@ class GBWSource:
                 "pageNum": page,
                 "pageSize": page_size
             }
-            
-            resp = self.session.get(search_url, params=params, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                rows = data.get("rows", [])
-                
-                for row in rows:
+
+            j = call_api(self.session, 'GET', search_url, params=params, timeout=15)
+            rows = find_rows(j)
+
+            for row in rows:
                     # Parse standard code properly
                     std_code = self._parse_std_code(row.get("C_STD_CODE", ""))
                     std_name = self._clean_text(row.get("C_C_NAME", ""))
@@ -102,47 +101,6 @@ class GBWSource:
             detail_url = f"{self.base_url}/gb/search/gbDetailed?id={item_id}"
             resp = self.session.get(detail_url, timeout=10)
             match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
-            if match:
-                return match.group(1)
-        except:
-            pass
-        return ""
-    
-    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple[Path | None, list[str]]:
-        """Download PDF from GBW - requires browser automation for captcha"""
-        logs = []
-        
-        def emit(msg: str):
-            logs.append(msg)
-            if log_cb:
-                log_cb(msg)
-        
-        try:
-            meta = item.source_meta
-            item_id = meta.get("id", "") if isinstance(meta, dict) else ""
-            
-            if not item_id:
-                emit("GBW: 未找到标准ID")
-                return None, logs
-            
-            # Get HCNO
-            emit("GBW: 获取下载链接...")
-            hcno = self._get_hcno(item_id)
-            
-            if not hcno:
-                emit("GBW: 无法获取HCNO，该标准可能仅提供目录")
-                return None, logs
-            
-            emit(f"GBW: 找到HCNO: {hcno[:8]}...")
-            emit("GBW: 此源需要验证码，将尝试其他来源")
-            
-            # GBW download requires playwright and OCR for captcha
-            return None, logs
-            
-        except Exception as e:
-            emit(f"GBW: 下载错误: {e}")
-            return None, logs
-
             if match:
                 return match.group(1)
         except:
@@ -229,7 +187,7 @@ class GBWSource:
                 captcha_img = None
                 try:
                     # 常见选择器：img[src*="captcha"], img#captcha
-                    captcha_img = page.query_selector('img[src*="captcha"])')
+                    captcha_img = page.query_selector('img[src*="captcha"]')
                 except Exception:
                     captcha_img = None
 

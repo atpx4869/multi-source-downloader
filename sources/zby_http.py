@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
 import requests
 
+from .http_search import call_api, find_rows
+
 API_URL_DEFAULT = "https://login.bz.zhenggui.vip/bzy-api/org/std/search"
 
 
@@ -9,8 +11,7 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
 
     Returns empty list on failure.
     """
-    sess = session or requests.Session()
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://bz.zhenggui.vip", "Origin": "https://bz.zhenggui.vip"}
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://bz.zhenggui.vip", "Origin": "https://bz.zhenggui.vip", "Content-Type": "application/json;charset=UTF-8"}
     body = {
         "params": {
             "pageNo": int(page),
@@ -32,20 +33,9 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
         "orgId": "",
         "time": "",
     }
-    try:
-        r = sess.post(api_url, headers={**headers, "Content-Type": "application/json;charset=UTF-8"}, json=body, timeout=10)
-        if r.status_code != 200:
-            return []
-        j = r.json()
-        if isinstance(j, dict):
-            data = j.get('data') or j.get('result') or {}
-            rows = None
-            if isinstance(data, dict):
-                rows = data.get('rows')
-            if rows is None and isinstance(j.get('rows'), list):
-                rows = j.get('rows')
-            if isinstance(rows, list):
-                return rows
+
+    j = call_api(session, 'POST', api_url, json_body=body, headers=headers, timeout=10)
+    if j is None:
         return []
-    except Exception:
-        return []
+    rows = find_rows(j)
+    return rows or []

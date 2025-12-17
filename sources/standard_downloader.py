@@ -72,12 +72,19 @@ class StandardDownloader:
             elif isinstance(meta, dict):
                 # Try to construct a minimal Standard if available
                 if Standard is not None:
+                    # compute mapped status before constructing Standard
+                    try:
+                        from .status_map import map_status
+                        mapped_status = map_status(meta.get('standardStatus') if 'standardStatus' in meta else meta.get('status'))
+                    except Exception:
+                        mapped_status = str(meta.get('standardStatus') or meta.get('status') or '')
+
                     item = Standard(
                         std_no=(meta.get('standardNum') or meta.get('std_no') or '').strip(),
                         name=(meta.get('standardName') or meta.get('name') or '').strip(),
                         publish=(meta.get('standardPubTime') or meta.get('publish') or '')[:10],
                         implement=(meta.get('standardUsefulDate') or meta.get('implement') or '')[:10],
-                        status=str(meta.get('standardStatus') or meta.get('status') or ''),
+                        status=mapped_status,
                         has_pdf=bool(meta.get('hasPdf') or meta.get('has_pdf') or False),
                         source_meta=meta,
                         sources=["ZBY"],

@@ -155,8 +155,11 @@ class ZBYSource:
                             std_no = (row.get('standardNumDeal') or row.get('standardNum') or '').strip()
                             name = (row.get('standardName') or '').strip()
                             has_pdf = bool(int(row.get('hasPdf', 0))) if row.get('hasPdf') is not None else False
+                            # standardStatus is provided as numeric code by the backend; map to human-readable labels
+                            from .status_map import map_status
+                            status = map_status(row.get('standardStatus'))
                             meta = row
-                            items.append(Standard(std_no=std_no, name=name, publish=str(row.get('standardPubTime') or ''), implement='', status=str(row.get('standardStatus') or ''), has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
+                            items.append(Standard(std_no=std_no, name=name, publish=str(row.get('standardPubTime') or ''), implement='', status=status, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
                         except Exception:
                             pass
                     return items[:int(page_size)]
