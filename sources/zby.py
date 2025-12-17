@@ -24,7 +24,14 @@ try:
             # Ensure debug artifacts are written to the repository downloads folder
             # even when running from a PyInstaller temporary extraction directory.
             od = Path(output_dir)
-            if isinstance(output_dir, str) and output_dir == "downloads":
+            # If output_dir is relative (likely 'downloads'), map it to repo downloads
+            try:
+                if (isinstance(output_dir, str) and output_dir == "downloads") or (isinstance(output_dir, Path) and not Path(output_dir).is_absolute()):
+                    # repository root is two levels up from this file (sources/)
+                    repo_root = Path(__file__).resolve().parents[1]
+                    od = repo_root / "downloads"
+            except Exception:
+                od = Path(output_dir)
                 try:
                     # repository root is two levels up from this file (sources/)
                     repo_root = Path(__file__).resolve().parents[1]
