@@ -3,4 +3,4 @@
 Sources package - Standard data sources
 """
 
-__all__ = ['GBWSource', 'BYSource', 'ZBYSource']
+__all__ = ['gbw', 'by', 'zby']

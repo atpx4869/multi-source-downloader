@@ -28,11 +28,6 @@ class StandardDownloader:
     def __init__(self, output_dir: Path | str = "downloads"):
         self.output_dir = Path(output_dir)
         self._impl = None
-        try:
-            from .zby_playwright import ZBYSource
-            self._impl = ZBYSource(self.output_dir)
-        except Exception:
-            self._impl = None
 
     def is_available(self, timeout: int = 6) -> bool:
         if self._impl and hasattr(self._impl, 'is_available'):
@@ -44,6 +39,14 @@ class StandardDownloader:
 
     def search(self, keyword: str, **kwargs) -> List[Any]:
         """Return a list of `Standard` objects (or empty list)."""
+        # Lazy-import playwright-backed implementation only when needed
+        if self._impl is None:
+            try:
+                from .zby_playwright import ZBYSource
+                self._impl = ZBYSource(self.output_dir)
+            except Exception:
+                self._impl = None
+
         if self._impl and hasattr(self._impl, 'search'):
             try:
                 return self._impl.search(keyword, **kwargs)
@@ -53,6 +56,13 @@ class StandardDownloader:
 
     def download_standard(self, meta: Any) -> Path | None:
         """Download given meta (Standard or dict) and return Path or None."""
+        if self._impl is None:
+            try:
+                from .zby_playwright import ZBYSource
+                self._impl = ZBYSource(self.output_dir)
+            except Exception:
+                self._impl = None
+
         if not self._impl:
             return None
         try:

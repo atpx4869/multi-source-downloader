@@ -50,6 +50,36 @@ try:
 except Exception:
     pass
 
+# When PyInstaller misses a dynamic submodule, try loading it directly from source
+try:
+    if 'sources.zby' not in sys.modules:
+        import importlib.util as _il
+        import types as _types
+        mod_path = project_root / 'sources' / 'zby.py'
+        # ensure package object exists so __import__('sources.zby') works
+        if 'sources' not in sys.modules:
+            try:
+                pkg = _types.ModuleType('sources')
+                pkg.__path__ = [str(project_root / 'sources')]
+                sys.modules['sources'] = pkg
+            except Exception:
+                pass
+        if mod_path.exists():
+            try:
+                spec = _il.spec_from_file_location('sources.zby', str(mod_path))
+                if spec and spec.loader:
+                    m = _il.module_from_spec(spec)
+                    spec.loader.exec_module(m)
+                    sys.modules['sources.zby'] = m
+                    try:
+                        setattr(sys.modules.get('sources'), 'zby', m)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+except Exception:
+    pass
+
 import traceback
 import pandas as pd
 
