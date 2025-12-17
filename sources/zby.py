@@ -21,7 +21,17 @@ try:
         priority = 3
 
         def __init__(self, output_dir: Path | str = "downloads"):
-            self.output_dir = Path(output_dir)
+            # Ensure debug artifacts are written to the repository downloads folder
+            # even when running from a PyInstaller temporary extraction directory.
+            od = Path(output_dir)
+            if isinstance(output_dir, str) and output_dir == "downloads":
+                try:
+                    # repository root is two levels up from this file (sources/)
+                    repo_root = Path(__file__).resolve().parents[1]
+                    od = repo_root / "downloads"
+                except Exception:
+                    od = Path(output_dir)
+            self.output_dir = Path(od)
             self.client = StandardDownloader(output_dir=self.output_dir)
             # determine base_url from client if available
             self.base_url = getattr(self.client, 'base_url', DEFAULT_BASE_URL)
