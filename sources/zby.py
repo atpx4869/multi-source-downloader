@@ -149,19 +149,66 @@ try:
             items: List[Standard] = []
             try:
                 import requests
+                # Create a session with retries to be robust to transient network errors
+                from requests.adapters import HTTPAdapter
+                from urllib3.util.retry import Retry
+
+                session = requests.Session()
+                retries = Retry(total=3, backoff_factor=0.5, status_forcelist=(500, 502, 503, 504))
+                adapter = HTTPAdapter(max_retries=retries)
+                session.mount('https://', adapter)
+                session.mount('http://', adapter)
+
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     "Referer": self.base_url,
                 }
-                # try two possible search endpoints used by site
-                urls = [f"{self.base_url}/standardList?searchText={keyword}", f"{self.base_url}/#/search?keyWords={keyword}"]
+
+                # candidate endpoints (try multiple patterns and query param names)
+                urls = [
+                    f"{self.base_url}/standardList",
+                    f"{self.base_url}/search",
+                    f"{self.base_url}/#/search",
+                    f"{self.base_url}/api/search",
+                    f"{self.base_url}/std/search",
+                ]
+
                 resp_text = ""
                 for u in urls:
                     try:
-                        r = requests.get(u, headers=headers, timeout=8)
-                        if r.status_code == 200 and r.text:
-                            resp_text = r.text
-                            break
+                        # prefer params over embedding keyword into URL
+                        r = session.get(u, params={"searchText": keyword, "keyWords": keyword, "q": keyword}, headers=headers, timeout=8)
+                        # if server returned JSON, try parse and extract rows
+                        ctype = r.headers.get('Content-Type', '')
+                        if r.status_code == 200:
+                            if 'application/json' in ctype:
+                                try:
+                                    j = r.json()
+                                    # try common shapes
+                                    if isinstance(j, dict) and ('rows' in j or 'data' in j):
+                                        rows = j.get('rows') or j.get('data') or []
+                                        parsed = []
+                                        for rr in rows:
+                                            if isinstance(rr, dict):
+                                                parsed.append(Standard(
+                                                    std_no=(rr.get('standardNum') or rr.get('std_no') or '').strip(),
+                                                    name=(rr.get('standardName') or rr.get('name') or '').strip(),
+                                                    publish=(rr.get('standardPubTime') or rr.get('publish') or '')[:10],
+                                                    implement=(rr.get('standardUsefulDate') or rr.get('implement') or '')[:10],
+                                                    status=str(rr.get('standardStatus') or rr.get('status') or ''),
+                                                    has_pdf=bool(rr.get('hasPdf') or rr.get('has_pdf') or False),
+                                                    source_meta=rr,
+                                                    sources=['ZBY'],
+                                                ))
+                                        if parsed:
+                                            return parsed[:int(page_size)]
+                                except Exception:
+                                    pass
+                            # otherwise use HTML text
+                            if r.text and len(r.text) > 200:
+                                resp_text = r.text
+                                break
                     except Exception as e:
                         # write short debug for request failures
                         try:
