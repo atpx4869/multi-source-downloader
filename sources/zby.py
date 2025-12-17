@@ -46,6 +46,22 @@ try:
         def is_available(self, timeout: int = 6) -> bool:
             """检测 ZBY 源是否可用：优先使用 client 提供的检测方法或尝试访问 base_url 属性。"""
             try:
+                import sys as _sys
+                frozen = getattr(_sys, 'frozen', False)
+            except Exception:
+                frozen = False
+
+            try:
+                # If frozen, avoid Playwright/browser checks — use a simple HTTP probe first
+                if frozen:
+                    try:
+                        import requests
+                        base = getattr(self.client, 'base_url', DEFAULT_BASE_URL)
+                        r = requests.get(base, timeout=timeout)
+                        return 200 <= getattr(r, 'status_code', 0) < 400
+                    except Exception:
+                        return False
+
                 if hasattr(self.client, 'is_available') and callable(getattr(self.client, 'is_available')):
                     return bool(self.client.is_available())
                 # 如果 client 提供 base_url，则尝试请求
@@ -58,7 +74,24 @@ try:
                 return False
 
         def search(self, keyword: str, **kwargs) -> List[Standard]:
-                # Try using user-provided client first
+                # If running as a frozen executable, prefer HTTP fallback first
+                data = None
+                try:
+                    import sys as _sys
+                    frozen = getattr(_sys, 'frozen', False)
+                except Exception:
+                    frozen = False
+
+                if frozen:
+                    try:
+                        http_items = self._http_search(keyword, **kwargs)
+                        if http_items:
+                            # return early with Standard objects
+                            return http_items
+                    except Exception:
+                        pass
+
+                # Try using user-provided client next
                 try:
                     data = self.client.search(keyword, **kwargs)
                 except Exception as e:
