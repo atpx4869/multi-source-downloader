@@ -55,10 +55,10 @@ jobs:
         python -m pip show pyinstaller || Write-Host "PyInstaller not installed yet"
         python -c "import sys; print('Python', sys.version)"
         Write-Host "=== Running PyInstaller ==="
-      # Print certifi CA bundle path to help diagnose SSL issues in frozen builds
-      python -c "import certifi; print('certifi:', certifi.where())" || Write-Host 'certifi not available'
-      # Collect certifi and requests related package data to ensure SSL and HTTP libs work after bundling
-      python -m PyInstaller --onefile --windowed --name StandardDownloader desktop_app.py --log-level=DEBUG --collect-data certifi --collect-all requests --collect-data urllib3
+        # Print certifi CA bundle path to help diagnose SSL issues in frozen builds
+        python -c "import certifi; print('certifi:', certifi.where())" || Write-Host 'certifi not available'
+        # Collect certifi and requests related package data to ensure SSL and HTTP libs work after bundling
+        python -m PyInstaller --onefile --windowed --name StandardDownloader desktop_app.py --log-level=DEBUG --collect-data certifi --collect-all requests --collect-data urllib3
         if (Test-Path dist\StandardDownloader.exe) {
             $dest = "dist\StandardDownloader-x64-$($env:VERSION).exe"
             Write-Host "Moving exe to $dest"
