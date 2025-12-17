@@ -50,7 +50,7 @@ jobs:
     - name: Build executable
       shell: bash
       run: |
-        python -m PyInstaller build.spec
+        pyinstaller --onefile --windowed --name StandardDownloader desktop_app.py
         mv dist/StandardDownloader.exe "dist/StandardDownloader-x64-${{ env.VERSION }}.exe"
     
     - name: Package source code
