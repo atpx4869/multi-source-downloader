@@ -595,6 +595,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # 分页状态
         self.current_page = 1
         self.total_pages = 1
+        # pending search rows (避免在搜索未完全结束前就更新显示)
+        self._pending_search_rows = None
 
         # 菜单栏已移除，功能集成到UI中
 
@@ -1510,6 +1512,15 @@ class MainWindow(QtWidgets.QMainWindow):
     
     def on_search_finished(self):
         """主搜索完成后，启动后台搜索"""
+        # 在搜索线程结束后再把 pending rows 应用到界面，避免竞态
+        if getattr(self, '_pending_search_rows', None) is not None:
+            try:
+                self.all_items = self._pending_search_rows.copy()
+                self.current_page = 1
+                self.apply_filter()
+            finally:
+                self._pending_search_rows = None
+
         self.btn_search.setEnabled(True)
         self.progress_bar.hide()
         self.status.showMessage("搜索完成", 3000)
@@ -1566,10 +1577,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 return 2
         
         rows.sort(key=status_sort_key)
-        
-        self.all_items = rows.copy()  # 保存完整列表用于筛选
-        self.current_page = 1  # 重置到第一页
-        self.apply_filter()  # 应用筛选（如果有）
+
+        # 存为 pending，等待线程 finished 信号再更新界面，避免在搜索过程中部分/空结果被误显示
+        self._pending_search_rows = rows
+        self.status.showMessage(f"已接收 {len(rows)} 条结果，等待搜索完成...", 2000)
     
     def apply_filter(self):
         """根据筛选条件显示数据"""
