@@ -1,8 +1,9 @@
 import os
-import cv2
+import io
 import numpy as np
 import onnxruntime as ort
 import string
+from PIL import Image
 
 # 字符集 (必须与训练一致)
 SPECIFIC_SYMBOLS = "/*%@#"
@@ -37,25 +38,30 @@ class OCR:
         self.output_name = self.session.get_outputs()[0].name
         self.img_size = (512, 512) # 训练时的 imgsz
 
-    def letterbox(self, im, new_shape=(512, 512), color=(114, 114, 114)):
-        shape = im.shape[:2]
-        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    def letterbox_pil(self, im, new_shape=(512, 512), color=(114, 114, 114)):
+        # im is a PIL Image
+        width, height = im.size
+        r = min(new_shape[0] / height, new_shape[1] / width)
+        new_unpad = int(round(width * r)), int(round(height * r))
+        
         dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
         dw /= 2; dh /= 2
         
-        if shape[::-1] != new_unpad:
-            im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+        if (width, height) != new_unpad:
+            im = im.resize(new_unpad, Image.BILINEAR)
             
         top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
         left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-        im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
-        return im, r, (dw, dh)
+        
+        # Create new image with padding
+        new_im = Image.new('RGB', new_shape, color)
+        new_im.paste(im, (int(left), int(top)))
+        
+        return new_im, r, (dw, dh)
 
-    def preprocess(self, img_src):
-        image, ratio, (dw, dh) = self.letterbox(img_src, new_shape=self.img_size)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = image.astype(np.float32) / 255.0
+    def preprocess(self, pil_img):
+        image, ratio, (dw, dh) = self.letterbox_pil(pil_img, new_shape=self.img_size)
+        image = np.array(image).astype(np.float32) / 255.0
         image = image.transpose(2, 0, 1)
         image = np.expand_dims(image, axis=0)
         return image, {'ratio': ratio, 'dw': dw, 'dh': dh}
@@ -93,14 +99,19 @@ class OCR:
         """内部核心推理方法"""
         img = None
         if isinstance(input_source, str):
-            if os.path.exists(input_source): img = cv2.imread(input_source)
+            if os.path.exists(input_source):
+                img = Image.open(input_source).convert('RGB')
         elif isinstance(input_source, bytes):
-            nparr = np.frombuffer(input_source, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            img = Image.open(io.BytesIO(input_source)).convert('RGB')
+        elif isinstance(input_source, Image.Image):
+            img = input_source.convert('RGB')
         elif isinstance(input_source, np.ndarray):
-            img = input_source
+            # Assume BGR if from cv2, but here we prefer PIL
+            img = Image.fromarray(input_source).convert('RGB')
             
-        if img is None: return "", []
+        if img is None: 
+            print("DEBUG: Image is None")
+            return "", []
 
         input_tensor, meta = self.preprocess(img)
         outputs = self.session.run([self.output_name], {self.input_name: input_tensor})
@@ -111,7 +122,9 @@ class OCR:
         predictions = predictions[keep_mask]
         scores = scores[keep_mask]
         
-        if len(predictions) == 0: return "", []
+        if len(predictions) == 0: 
+            # print(f"DEBUG: No predictions above conf {conf}")
+            return "", []
         
         class_ids = np.argmax(predictions[:, 4:], axis=1)
         boxes = self.xywh2xyxy(predictions[:, :4])

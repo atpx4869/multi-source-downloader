@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import List, Callable
 
 from core.models import Standard
-from .gbw_download import get_hcno, download_with_ocr, sanitize_filename
+from .gbw_download import get_hcno, download_with_ocr, sanitize_filename, prewarm_ocr
 from .http_search import call_api, find_rows
 
 
@@ -20,10 +20,16 @@ class GBWSource:
         self.priority = 1
         self.base_url = "https://std.samr.gov.cn"
         self.session = requests.Session()
-        self.session.trust_env = False  # 忽略系统代理设置，避免 ProxyError
+        self.session.trust_env = False  # 忽略系统代理设置
+        self.session.proxies = {"http": None, "https": None} # 显式禁用代理
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
+        # 预热 OCR 模型
+        try:
+            prewarm_ocr()
+        except Exception:
+            pass
     
     def _clean_text(self, text: str) -> str:
         """Clean XML tags from text, preserving inner content"""
@@ -34,39 +40,49 @@ class GBWSource:
         return cleaned.strip()
     
     def _parse_std_code(self, raw_code: str) -> str:
-        """Parse standard code like 'GB/T <sacinfo>33260.3-2018</sacinfo>' -> 'GB/T 33260.3-2018'"""
+        """Parse standard code like '<sacinfo>GB</sacinfo>/<sacinfo>T</sacinfo> <sacinfo>46541-2025</sacinfo>' -> 'GB/T 46541-2025'"""
         if not raw_code:
             return ""
-        # Extract prefix (GB/T, GB, etc.)
-        prefix_match = re.match(r'^([A-Z]+(?:/[A-Z]+)?)\s*', raw_code)
-        prefix = prefix_match.group(1) if prefix_match else ""
         
-        # Extract number from sacinfo tag or directly
-        sacinfo_match = re.search(r'<sacinfo>([^<]+)</sacinfo>', raw_code)
-        if sacinfo_match:
-            number = sacinfo_match.group(1)
-        else:
-            # Remove prefix and clean
-            number = self._clean_text(raw_code)
-            if prefix and number.startswith(prefix):
-                number = number[len(prefix):].strip()
+        # 直接移除所有 HTML 标签并清理空白
+        cleaned = re.sub(r'<[^>]+>', '', raw_code)
+        # 将多个空格合并为一个，并处理常见的格式问题
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         
-        return f"{prefix} {number}".strip() if prefix else number
+        # 针对 GB/T 这种中间可能有斜杠但被拆分的情况进行修正
+        # 例如 "GB / T" -> "GB/T"
+        cleaned = re.sub(r'([A-Z])\s*/\s*([A-Z])', r'\1/\2', cleaned)
+        
+        return cleaned
     
     def search(self, keyword: str, page: int = 1, page_size: int = 20, **kwargs) -> List[Standard]:
         """Search standards from GBW API"""
         items = []
+        
+        # 尝试多种关键词组合
+        keywords_to_try = [keyword]
+        if '/' in keyword or ' ' in keyword:
+            keywords_to_try.append(keyword.replace('/', '').replace(' ', ''))
+        if '-' in keyword:
+            keywords_to_try.append(keyword.split('-')[0].strip())
+            
+        rows = []
+        for kw in keywords_to_try:
+            try:
+                search_url = f"{self.base_url}/gb/search/gbQueryPage"
+                params = {
+                    "searchText": kw,
+                    "pageNumber": page,
+                    "pageSize": page_size
+                }
+                j = call_api(self.session, 'GET', search_url, params=params, timeout=15)
+                rows = find_rows(j)
+                if rows:
+                    break
+            except Exception:
+                continue
+                
         try:
-            search_url = f"{self.base_url}/gb/search/gbQueryPage"
-            params = {
-                "searchText": keyword,
-                "pageNum": page,
-                "pageSize": page_size
-            }
-
-            j = call_api(self.session, 'GET', search_url, params=params, timeout=15)
-            rows = find_rows(j)
-
             for row in rows:
                     # Parse standard code properly
                     std_code = self._parse_std_code(row.get("C_STD_CODE", ""))
@@ -98,14 +114,55 @@ class GBWSource:
     
     def _get_hcno(self, item_id: str) -> str:
         """Get HCNO from detail page"""
-        try:
-            detail_url = f"{self.base_url}/gb/search/gbDetailed?id={item_id}"
-            resp = self.session.get(detail_url, timeout=10)
-            match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
-            if match:
-                return match.group(1)
-        except:
-            pass
+        import time
+        for retry in range(3):
+            try:
+                # 尝试两个可能的详情页域名
+                for base in ["https://std.samr.gov.cn", "https://openstd.samr.gov.cn"]:
+                    detail_url = f"{base}/gb/search/gbDetailed?id={item_id}"
+                    # 显式禁用代理
+                    resp = self.session.get(detail_url, timeout=10, proxies={"http": None, "https": None})
+                    if resp.status_code != 200:
+                        continue
+                    
+                    # 尝试多种匹配模式
+                    # 1. URL 参数模式
+                    match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
+                    if match:
+                        return match.group(1)
+                    
+                    # 2. data-value 属性模式 (常见于按钮)
+                    match = re.search(r'data-value=["\']([A-F0-9]{32})["\']', resp.text)
+                    if match:
+                        return match.group(1)
+                    
+                    # 3. JavaScript 变量模式
+                    match = re.search(r'hcno\s*[:=]\s*["\']([A-F0-9]{32})["\']', resp.text)
+                    if match:
+                        return match.group(1)
+                    
+                    # 4. 针对 openstd 的新版详情页
+                    match = re.search(r'newGbInfo\?hcno=([A-F0-9]{32})', resp.text)
+                    if match:
+                        return match.group(1)
+                    
+                    # 5. 针对某些页面可能包含跳转链接
+                    match = re.search(r'window\.location\.href\s*=\s*["\'].*?hcno=([A-F0-9]{32})', resp.text)
+                    if match:
+                        return match.group(1)
+
+                # 如果还是没找到，尝试直接在 openstd 搜索该 ID
+                search_url = f"https://openstd.samr.gov.cn/bzgk/gb/search/gbQueryPage?searchText={item_id}"
+                resp = self.session.get(search_url, timeout=10, proxies={"http": None, "https": None})
+                match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
+                if match:
+                    return match.group(1)
+                    
+            except Exception as e:
+                if retry < 2:
+                    time.sleep(1)
+                else:
+                    print(f"GBW _get_hcno error: {e}")
         return ""
     
     def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
@@ -122,9 +179,14 @@ class GBWSource:
         try:
             meta = item.source_meta
             item_id = meta.get("id", "") if isinstance(meta, dict) else ""
-            hcno = (meta.get("hcno") if isinstance(meta, dict) else None) or (self._get_hcno(item_id) if item_id else "")
+            # 优先从 meta 获取 hcno，如果没有则通过详情页获取
+            hcno = meta.get("hcno") if isinstance(meta, dict) else None
+            if not hcno or len(hcno) != 32:
+                emit(f"GBW: 正在从详情页获取 HCNO (ID: {item_id})...")
+                hcno = self._get_hcno(item_id)
+            
             if hcno:
-                emit(f"GBW: 使用 requests 获取到 HCNO: {hcno[:8]}...")
+                emit(f"GBW: 获取到 HCNO: {hcno}")
                 out_dir = output_dir or Path("downloads")
                 out_dir.mkdir(parents=True, exist_ok=True)
                 try:
@@ -132,7 +194,8 @@ class GBWSource:
                 except Exception:
                     filename = sanitize_filename(item.name or item.std_no) + '.pdf'
                 out_path = out_dir / filename
-                ok = download_with_ocr(hcno, out_path, logger=emit)
+                # 传入 session 以复用连接
+                ok = download_with_ocr(hcno, out_path, logger=emit, session=self.session)
                 if ok:
                     emit(f"GBW: requests 下载成功 -> {out_path}")
                     return out_path, logs

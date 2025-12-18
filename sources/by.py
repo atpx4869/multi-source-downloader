@@ -30,6 +30,8 @@ def _extract_hidden(html: str, name: str) -> str:
 
 def _login(session: requests.Session) -> bool:
     """登录标院内网系统"""
+    session.trust_env = False
+    session.proxies = {"http": None, "https": None}
     try:
         # Step 1: GET login page
         r1 = session.get(LOGIN_URL, timeout=TIMEOUT)
@@ -193,7 +195,8 @@ class BYSource:
         if self._available is not None:
             return self._available
         try:
-            resp = requests.head(BASE, timeout=3)
+            # 显式禁用代理，避免系统代理干扰
+            resp = requests.head(BASE, timeout=3, proxies={"http": None, "https": None})
             self._available = resp.status_code == 200
         except Exception:
             self._available = False

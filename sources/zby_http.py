@@ -17,7 +17,7 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
             "pageNo": int(page),
             "pageSize": int(page_size),
             "model": {
-                "standardNum": None,
+                "standardNum": keyword if '-' in keyword or '/' in keyword else None,
                 "standardName": None,
                 "standardType": None,
                 "standardCls": None,

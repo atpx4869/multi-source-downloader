@@ -314,6 +314,10 @@ class AggregatedDownloader:
         def filtered_cb(line: str):
             if not isinstance(line, str):
                 return
+            
+            # 涉及保密，脱敏处理：隐藏所有网址
+            line = re.sub(r'https?://[^\s<>"]+', '[URL]', line)
+            
             if line in seen_item:
                 return
             seen_item.add(line)

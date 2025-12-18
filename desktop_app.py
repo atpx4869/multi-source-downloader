@@ -22,6 +22,15 @@ from __future__ import annotations
 
 import sys
 import os
+
+# 禁用全局代理，避免系统代理干扰网络请求
+os.environ['HTTP_PROXY'] = ''
+os.environ['HTTPS_PROXY'] = ''
+os.environ['http_proxy'] = ''
+os.environ['https_proxy'] = ''
+os.environ['NO_PROXY'] = '*'
+os.environ['no_proxy'] = '*'
+
 import json
 from pathlib import Path
 from datetime import datetime
@@ -30,6 +39,11 @@ from typing import List, Dict, Optional, Any
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+# Add ppllocr path for development mode
+ppllocr_path = project_root / "ppllocr" / "ppllocr-main"
+if ppllocr_path.exists():
+    sys.path.insert(0, str(ppllocr_path))
 
 # Ensure the local "sources" package is discovered by PyInstaller
 # Some imports are dynamic in the codebase; this explicit import helps
@@ -85,7 +99,25 @@ except Exception:
 import traceback
 import pandas as pd
 
-from PySide6 import QtCore, QtWidgets, QtGui
+try:
+    from PySide6 import QtCore, QtWidgets, QtGui
+    PYSIDE_VER = 6
+except ImportError:
+    try:
+        from PySide2 import QtCore, QtWidgets, QtGui
+        PYSIDE_VER = 2
+    except ImportError:
+        raise ImportError("Neither PySide6 nor PySide2 is installed.")
+
+# 兼容性处理：Qt5 使用 exec_()，Qt6 使用 exec()
+if PYSIDE_VER == 2:
+    if not hasattr(QtWidgets.QApplication, 'exec'):
+        QtWidgets.QApplication.exec = QtWidgets.QApplication.exec_
+    if not hasattr(QtWidgets.QDialog, 'exec'):
+        QtWidgets.QDialog.exec = QtWidgets.QDialog.exec_
+    if not hasattr(QtCore.QCoreApplication, 'exec'):
+        QtCore.QCoreApplication.exec = QtCore.QCoreApplication.exec_
+
 import ui_styles
 
 # 规范号规范化正则（复用以避免在循环中重复编译）
@@ -494,6 +526,126 @@ class BackgroundSearchThread(QtCore.QThread):
         self.finished.emit(cache)
 
 
+class BatchDownloadThread(QtCore.QThread):
+    log = QtCore.Signal(str)
+    finished = QtCore.Signal(int, int, list)  # success, fail, failed_list
+    progress = QtCore.Signal(int, int, str)  # current, total, message
+
+    def __init__(self, std_ids: List[str], output_dir: str = "downloads", enable_sources: List[str] = None):
+        super().__init__()
+        self.std_ids = std_ids
+        self.output_dir = output_dir
+        self.enable_sources = enable_sources
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        success = 0
+        fail = 0
+        failed_list = []
+        total = len(self.std_ids)
+        
+        try:
+            client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir=self.output_dir)
+        except Exception as e:
+            self.log.emit(f"❌ 初始化下载器失败: {e}")
+            self.finished.emit(0, total, self.std_ids)
+            return
+
+        import time
+        for idx, std_id in enumerate(self.std_ids, start=1):
+            if self._stop_requested:
+                self.log.emit("🛑 用户取消了批量下载任务")
+                # 将剩余未处理的加入失败列表
+                failed_list.extend(self.std_ids[idx-1:])
+                fail = len(failed_list)
+                break
+
+            # 清理标准号：去除首尾空格、去除不可见字符（如 \xa0）
+            std_id = std_id.strip().replace('\xa0', ' ').replace('\u3000', ' ')
+            if not std_id:
+                continue
+                
+            # 如果不是第一个，增加随机延迟，避免请求过快被封
+            if idx > 1:
+                time.sleep(1.5)
+
+            self.progress.emit(idx, total, f"正在处理 ({idx}/{total}): {std_id}")
+            self.log.emit(f"──────────────────────────────────────")
+            self.log.emit(f"🔍 [{idx}/{total}] 正在搜索: {std_id}")
+            
+            try:
+                # 搜索该标准号，增加重试逻辑
+                results = []
+                for retry in range(3):
+                    try:
+                        # 搜索时尝试稍微清理一下关键词，比如去掉多余空格
+                        search_key = re.sub(r'\s+', ' ', std_id)
+                        results = client.search(search_key)
+                        if results:
+                            break
+                        
+                        # 如果没搜到，尝试只搜标准号部分（去掉年份）
+                        if '-' in search_key:
+                            short_key = search_key.split('-')[0].strip()
+                            results = client.search(short_key)
+                            if results:
+                                break
+
+                        if retry < 2:
+                            self.log.emit(f"   ⏳ 未找到结果，{retry+1}秒后重试...")
+                            time.sleep(retry + 1)
+                    except Exception as e:
+                        if retry < 2:
+                            time.sleep(retry + 1)
+                        else:
+                            raise e
+
+                if not results:
+                    self.log.emit(f"   ⚠️ 未找到标准: {std_id}")
+                    fail += 1
+                    failed_list.append(f"{std_id} (未找到标准)")
+                    continue
+                
+                # 寻找最匹配的项（优先完全匹配标准号）
+                best_match = results[0]
+                # 尝试寻找标准号完全一致的项（忽略空格和大小写）
+                clean_id = std_id.replace(" ", "").upper()
+                for r in results:
+                    if r.std_no.replace(" ", "").upper() == clean_id:
+                        best_match = r
+                        break
+                
+                self.log.emit(f"   ✅ 匹配到: {best_match.std_no}")
+                self.log.emit(f"   📄 标准名称: {best_match.name}")
+                self.log.emit(f"   📥 正在尝试下载...")
+                
+                # 传入 self.log.emit 作为回调，以便实时显示下载进度和内部日志
+                path, logs = client.download(best_match, log_cb=self.log.emit)
+                if path:
+                    # 尝试从 logs 中提取实际成功的源名称
+                    success_src = "未知"
+                    for line in reversed(logs):
+                        if "成功 ->" in line:
+                            success_src = line.split(":")[0].strip()
+                            break
+                    self.log.emit(f"   ✨ 下载成功 [{success_src}]")
+                    success += 1
+                else:
+                    self.log.emit(f"   ❌ 下载失败: 所有来源均未成功")
+                    fail += 1
+                    failed_list.append(f"{std_id} (下载失败)")
+            except Exception as e:
+                self.log.emit(f"   ❌ 处理出错: {e}")
+                fail += 1
+                failed_list.append(f"{std_id} (程序异常: {str(e)[:30]})")
+                
+        self.log.emit(f"──────────────────────────────────────")
+        self.finished.emit(success, fail, failed_list)
+
+
 class DownloadThread(QtCore.QThread):
     log = QtCore.Signal(str)
     finished = QtCore.Signal(int, int)
@@ -529,10 +681,9 @@ class DownloadThread(QtCore.QThread):
                 # 在下载前记录对象的来源信息，便于排查失败时的来源
                     # 不再打印完整的 source/meta 调试信息，避免泄露冗长内容
 
-                # 为每个条目创建独立的 AggregatedDownloader 实例
+                # 使用复用的 AggregatedDownloader 实例以提升性能
                 try:
-                    from core import AggregatedDownloader as _AD
-                    client = _AD(output_dir=self.output_dir, enable_sources=None)
+                    client = get_aggregated_downloader(enable_sources=None, output_dir=self.output_dir)
                 except Exception:
                     tb = traceback.format_exc()
                     self.log.emit(f"   ✗ 为 {std_no} 创建 AggregatedDownloader 失败，跳过该条: {str(tb)[:200]}")
@@ -556,14 +707,14 @@ class DownloadThread(QtCore.QThread):
                 # 记录 client.download 返回的日志信息（如果有）以便追踪具体使用的源
                 try:
                     if logs:
-                        # 从下载日志中挑选重要信息（包含关键词的行），最多显示三行
+                        # 从下载日志中挑选重要信息（包含关键词的行），最多显示更多行以便调试
                         important = []
-                        keywords = ("成功", "失败", "下载完成", "获取到UUID", "PDF生成成功", "requests 下载成功")
+                        keywords = ("成功", "失败", "下载完成", "获取到", "PDF生成成功", "requests 下载成功", "OCR", "耗时", "校验", "尝试")
                         for line in logs:
                             try:
                                 if any(k in line for k in keywords):
                                     important.append(line)
-                                if len(important) >= 3:
+                                if len(important) >= 20:
                                     break
                             except Exception:
                                 continue
@@ -774,10 +925,92 @@ class SettingsDialog(QtWidgets.QDialog):
         }
 
 
+class BatchDownloadDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("批量下载")
+        self.resize(500, 400)
+        self.setModal(True)
+        
+        layout = QtWidgets.QVBoxLayout(self)
+        
+        lbl_hint = QtWidgets.QLabel("请输入标准号（每行一个，或使用逗号、空格分隔）：")
+        lbl_hint.setStyleSheet("font-weight: bold; color: #333;")
+        layout.addWidget(lbl_hint)
+        
+        self.text_edit = QtWidgets.QPlainTextEdit()
+        self.text_edit.setPlaceholderText("例如：\nGB/T 3324-2024\nGB/T 3325-2024\nGB/T 10357.1-2013")
+        self.text_edit.setStyleSheet("""
+            QPlainTextEdit {
+                border: 1px solid #3498db;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: 'Courier New';
+                font-size: 12px;
+                background-color: white;
+            }
+        """)
+        layout.addWidget(self.text_edit)
+        
+        lbl_note = QtWidgets.QLabel("注：程序将自动搜索每个标准号并下载第一个匹配项。")
+        lbl_note.setStyleSheet("color: #666; font-size: 10px; font-style: italic;")
+        layout.addWidget(lbl_note)
+        
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.btn_ok = QtWidgets.QPushButton("🚀 开始批量下载")
+        self.btn_ok.setStyleSheet("""
+            QPushButton {
+                background-color: #51cf66;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 10px 20px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #37b24d; }
+            QPushButton:pressed { background-color: #2f8a3d; }
+        """)
+        self.btn_ok.clicked.connect(self.accept)
+        
+        self.btn_cancel = QtWidgets.QPushButton("取消")
+        self.btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #eee;
+                color: #333;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 10px 20px;
+            }
+            QPushButton:hover { background-color: #ddd; }
+        """)
+        self.btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_ok)
+        layout.addLayout(btn_layout)
+
+    def get_ids(self) -> List[str]:
+        text = self.text_edit.toPlainText()
+        # 修改正则：不再使用 \s 分割，只使用换行、逗号、分号、顿号分割
+        # 这样可以保留 "GB 18584-2024" 这种中间带空格的标准号
+        raw_ids = re.split(r'[\n\r,，;；、]+', text)
+        # 过滤空字符串并去重
+        ids = []
+        seen = set()
+        for i in raw_ids:
+            i = i.strip()
+            if i and i not in seen:
+                ids.append(i)
+                seen.add(i)
+        return ids
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("标准下载 - 桌面版")
+        self.setWindowTitle("标准下载 - 桌面版 V2.0.0")
         self.resize(1200, 750)
         # 应用全局样式（包含对话框样式与统一的复选框样式）
         try:
@@ -940,6 +1173,29 @@ class MainWindow(QtWidgets.QMainWindow):
         """)
         self.btn_download.clicked.connect(self.on_download)
         path_op_layout.addWidget(self.btn_download)
+        
+        # 批量下载按钮
+        self.btn_batch_download = QtWidgets.QPushButton("🚀 批量下载")
+        self.btn_batch_download.setMaximumWidth(85)
+        self.btn_batch_download.setStyleSheet("""
+            QPushButton {
+                background-color: #00b894;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 6px 8px;
+                font-weight: bold;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #00a383;
+            }
+            QPushButton:pressed {
+                background-color: #008f72;
+            }
+        """)
+        self.btn_batch_download.clicked.connect(self.on_batch_download)
+        path_op_layout.addWidget(self.btn_batch_download)
         
         left_layout.addWidget(path_op_row)
         
@@ -1360,6 +1616,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.progress_bar.hide()
         self.status.addPermanentWidget(self.progress_bar)
         
+        # 停止按钮
+        self.btn_stop_batch = QtWidgets.QPushButton("停止")
+        self.btn_stop_batch.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b6b;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #fa5252; }
+            QPushButton:disabled { background-color: #ccc; }
+        """)
+        self.btn_stop_batch.hide()
+        self.btn_stop_batch.clicked.connect(self.on_stop_batch)
+        self.status.addPermanentWidget(self.btn_stop_batch)
+        
         # 后台状态标签
         self.lbl_bg_status = QtWidgets.QLabel("")
         self.lbl_bg_status.setStyleSheet("color: #666; font-size: 11px;")
@@ -1418,6 +1693,12 @@ class MainWindow(QtWidgets.QMainWindow):
         action_about.triggered.connect(self.on_about)
 
     def append_log(self, text: str):
+        if not text:
+            return
+        
+        # 涉及保密，脱敏处理：隐藏所有网址
+        text = re.sub(r'https?://[^\s<>"]+', '[URL]', text)
+        
         now = datetime.now().strftime("%H:%M:%S")
         # 根据日志内容选择颜色
         if "错误" in text or "失败" in text or "Error" in text:
@@ -1972,7 +2253,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """表格右键菜单：下载所选"""
         menu = QtWidgets.QMenu(self)
         act_download = menu.addAction("下载所选")
-        act = menu.exec_(self.table.viewport().mapToGlobal(pos))
+        act = menu.exec(self.table.viewport().mapToGlobal(pos))
         if act == act_download:
             self.on_download()
     
@@ -2085,6 +2366,70 @@ class MainWindow(QtWidgets.QMainWindow):
         self.progress_bar.hide()
         self.status.showMessage(f"下载完成: {success} 成功, {fail} 失败", 5000)
 
+    def on_batch_download(self):
+        """打开批量下载对话框"""
+        dialog = BatchDownloadDialog(self)
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            ids = dialog.get_ids()
+            if not ids:
+                QtWidgets.QMessageBox.information(self, "提示", "请输入至少一个标准号")
+                return
+            
+            self.append_log(f"🚀 开始批量下载任务，共 {len(ids)} 个标准号")
+            self.btn_batch_download.setEnabled(False)
+            
+            # 显示进度条和停止按钮
+            self.progress_bar.setValue(0)
+            self.progress_bar.setMaximum(len(ids))
+            self.progress_bar.show()
+            self.btn_stop_batch.setEnabled(True)
+            self.btn_stop_batch.setText("停止")
+            self.btn_stop_batch.show()
+            
+            output_dir = self.settings.get("output_dir", "downloads")
+            enable_sources = self.settings.get("sources", ["GBW", "BY", "ZBY"])
+            
+            self.batch_thread = BatchDownloadThread(
+                ids, 
+                output_dir=output_dir,
+                enable_sources=enable_sources
+            )
+            self.batch_thread.log.connect(self.append_log)
+            self.batch_thread.progress.connect(self.on_download_progress)
+            self.batch_thread.finished.connect(self.on_batch_download_finished)
+            self.batch_thread.start()
+
+    def on_stop_batch(self):
+        """停止批量下载"""
+        if hasattr(self, 'batch_thread') and self.batch_thread.isRunning():
+            self.batch_thread.stop()
+            self.btn_stop_batch.setEnabled(False)
+            self.btn_stop_batch.setText("正在停止...")
+            self.append_log("⏳ 正在请求停止批量下载任务...")
+
+    def on_batch_download_finished(self, success: int, fail: int, failed_list: list):
+        self.append_log(f"📊 批量下载任务结束")
+        self.append_log(f"   ✅ 成功: {success}")
+        self.append_log(f"   ❌ 失败: {fail}")
+        
+        if failed_list:
+            self.append_log(f"📋 失败清单:")
+            for item in failed_list:
+                self.append_log(f"   - {item}")
+        
+        self.btn_batch_download.setEnabled(True)
+        self.progress_bar.hide()
+        self.btn_stop_batch.hide()
+        self.status.showMessage(f"批量下载完成: {success} 成功, {fail} 失败", 5000)
+        
+        msg = f"批量下载任务已结束。\n\n成功: {success}\n失败: {fail}"
+        if failed_list:
+            msg += "\n\n失败清单:\n" + "\n".join(failed_list[:15])
+            if len(failed_list) > 15:
+                msg += f"\n... 等共 {len(failed_list)} 项"
+        
+        QtWidgets.QMessageBox.information(self, "任务完成", msg)
+
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
@@ -2092,6 +2437,32 @@ def main():
     # 密码验证
     if not check_password():
         sys.exit(0)
+    
+    # 提前预热 OCR 模型和下载器，避免第一次下载时卡顿
+    def prewarm_all():
+        try:
+            from sources.gbw_download import prewarm_ocr
+            prewarm_ocr()
+        except Exception:
+            pass
+        try:
+            # 预热全量下载器，建立连接池
+            client = get_aggregated_downloader(enable_sources=None)
+            if client:
+                # 尝试对主要域名进行一次 HEAD 请求以预热 TCP/SSL 连接
+                for src in client.sources:
+                    if src.name == "GBW":
+                        try:
+                            # 预热 search 域名 (支持 HTTPS)
+                            src.session.head("https://std.samr.gov.cn/gb/search/gbQueryPage", timeout=5, proxies={"http": None, "https": None})
+                            # 预热 download 域名 (仅支持 HTTP)
+                            src.session.head("http://c.gb688.cn/bzgk/gb/showGb", timeout=5, proxies={"http": None, "https": None})
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+            
+    threading.Thread(target=prewarm_all, daemon=True).start()
     
     win = MainWindow()
     win.show()

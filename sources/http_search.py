@@ -20,6 +20,7 @@ def call_api(session: Optional[requests.Session], method: str, url: str, *, para
     Adds retry with exponential backoff and a very small simple cache when `use_cache` is True.
     """
     sess = session or requests.Session()
+    sess.trust_env = False  # 禁用系统代理
     key = None
     if use_cache:
         key = _cache_key(method, url, params, json_body)
@@ -42,6 +43,8 @@ def call_api(session: Optional[requests.Session], method: str, url: str, *, para
             kwargs['timeout'] = timeout
 
             _LOGGER.debug('http_search calling %s %s attempt=%d kwargs_keys=%s', method, url, attempt, list(kwargs.keys()))
+            # 显式禁用代理
+            kwargs['proxies'] = {"http": None, "https": None}
             if method.upper() == 'GET':
                 resp = sess.get(url, **kwargs)
             else:

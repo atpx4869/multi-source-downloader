@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  VERSION: "1.1.9"
+  VERSION: "2.0.0"
 
 jobs:
   build-x64:
@@ -24,47 +24,32 @@ jobs:
       shell: bash
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
     
-    - name: Setup Python 3.11 (x64)
+    - name: Setup Python 3.8 (x64)
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: '3.8'
         architecture: x64
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Install runtime dependencies including OCR prerequisites (onnxruntime + opencv)
-        python -m pip install PySide6 pandas requests img2pdf Pillow numpy onnxruntime opencv-python-headless
-        python -m pip install pyinstaller
-    
-    - name: Check pandas installation
-      run: |
-        python -m pip list
-        python -c "import pandas; print('Pandas version:', pandas.__version__)"
-    
-    - name: Install Playwright browsers
-      run: |
-        python -m pip install playwright
-        python -m playwright install chromium
+        # 使用 Win7 兼容环境的依赖
+        python -m pip install -r requirements_win7.txt
     
     - name: Build executable (PyInstaller)
       shell: pwsh
       run: |
-        Write-Host "=== Environment and versions ==="
-        python -m pip list
-        python -m pip show pyinstaller || Write-Host "PyInstaller not installed yet"
-        python -c "import sys; print('Python', sys.version)"
-        Write-Host "=== Running PyInstaller ==="
-        # Print certifi CA bundle path to help diagnose SSL issues in frozen builds
-        python -c "import certifi; print('certifi:', certifi.where())" || Write-Host 'certifi not available'
-        # Collect certifi and requests related package data to ensure SSL and HTTP libs work after bundling
-        python -m PyInstaller --onefile --windowed --name StandardDownloader desktop_app.py --log-level=DEBUG --collect-data certifi --collect-all requests --collect-data urllib3
-        if (Test-Path dist\StandardDownloader.exe) {
-            $dest = "dist\StandardDownloader-x64-$($env:VERSION).exe"
-            Write-Host "Moving exe to $dest"
-            Move-Item -Path dist\StandardDownloader.exe -Destination $dest -Force
+        Write-Host "=== Running PyInstaller (Folder Mode) ==="
+        # 使用与本地打包一致的参数
+        python -m PyInstaller --noconfirm --onedir --windowed --name "StandardDownloader" --hidden-import "sources" --hidden-import "sources.gbw" --hidden-import "sources.by" --hidden-import "sources.zby" --collect-all "sources" --collect-all "core" desktop_app.py
+        
+        if (Test-Path dist\StandardDownloader\StandardDownloader.exe) {
+            $zipName = "StandardDownloader-v$($env:VERSION)-win7-x64.zip"
+            Write-Host "Zipping folder to $zipName"
+            Compress-Archive -Path dist\StandardDownloader\* -DestinationPath "dist\$zipName"
+            echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
         } else {
-            Write-Host "PyInstaller did not produce dist\StandardDownloader.exe"
+            Write-Host "PyInstaller did not produce dist\StandardDownloader\StandardDownloader.exe"
             Exit 1
         }
 
@@ -83,21 +68,20 @@ jobs:
     - name: Package source code
       shell: pwsh
       run: |
-        $excludes = @('.git', '__pycache__', 'build', 'dist', '*.spec', '.auth_cache', 'downloads')
-        Compress-Archive -Path desktop_app.py, core, sources, ppllocr, requirements.txt, README.md -DestinationPath "dist/SourceCode-${{ env.VERSION }}.zip"
+        Compress-Archive -Path desktop_app.py, core, sources, ppllocr, requirements_win7.txt, README.md -DestinationPath "dist/SourceCode-${{ env.VERSION }}.zip"
     
     - name: Upload executable artifact
       uses: actions/upload-artifact@v4
       with:
-        name: StandardDownloader-x64-${{ env.VERSION }}
-        path: dist/*.exe
+        name: StandardDownloader-win7-x64-${{ env.VERSION }}
+        path: dist/*.zip
         retention-days: 30
     
     - name: Upload source code artifact
       uses: actions/upload-artifact@v4
       with:
         name: SourceCode-${{ env.VERSION }}
-        path: dist/*.zip
+        path: dist/SourceCode-*.zip
         retention-days: 30
 
   release:
@@ -112,7 +96,7 @@ jobs:
     - name: Download exe artifact
       uses: actions/download-artifact@v4
       with:
-        name: StandardDownloader-x64-${{ env.VERSION }}
+        name: StandardDownloader-win7-x64-${{ env.VERSION }}
         path: artifacts
     
     - name: Download source code artifact
@@ -125,7 +109,6 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          artifacts/*.exe
           artifacts/*.zip
         generate_release_notes: true
         draft: false

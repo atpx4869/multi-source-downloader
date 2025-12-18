@@ -23,6 +23,7 @@ class ZBYSource:
 		self.output_dir = output_dir or Path("downloads")
 		self.base_url = "https://bz.zhenggui.vip"
 		self.session = requests.Session()
+		self.session.trust_env = False  # 禁用系统代理
 		self.session.headers.update({
 			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 			"Referer": "https://bz.zhenggui.vip/"
@@ -39,7 +40,8 @@ class ZBYSource:
 		try:
 			if not getattr(self, 'base_url', None):
 				return False
-			r = self.session.get(self.base_url, timeout=timeout)
+			# 显式禁用代理
+			r = self.session.get(self.base_url, timeout=timeout, proxies={"http": None, "https": None})
 			return 200 <= getattr(r, 'status_code', 0) < 400
 		except Exception:
 			return False
@@ -153,6 +155,11 @@ class ZBYSource:
 	def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
 		logs = []
 		def emit(msg: str):
+			if not msg:
+				return
+			# 涉及保密，脱敏处理：隐藏所有网址
+			msg = re.sub(r'https?://[^\s<>"]+', '[URL]', msg)
+			
 			logs.append(msg)
 			if log_cb:
 				log_cb(msg)
@@ -271,7 +278,8 @@ class ZBYSource:
 		while True:
 			try:
 				url = f"https://resource.zhenggui.vip/immdoc/{uuid}/doc/I/{page_num}"
-				r = self.session.get(url, cookies=cookies_dict, timeout=15)
+				# 显式禁用代理
+				r = self.session.get(url, cookies=cookies_dict, timeout=15, proxies={"http": None, "https": None})
 				if r.status_code != 200:
 					break
 				img_path = temp_dir / f"{page_num:04d}.jpg"
