@@ -9,7 +9,7 @@ import shutil
 import requests
 import img2pdf
 from pathlib import Path
-from typing import List, Callable
+from typing import List, Callable, Optional, Union
 
 from core.models import Standard
 
@@ -17,7 +17,7 @@ from core.models import Standard
 class ZBYSource:
 	"""ZBY (智标云) Data Source - requires playwright for full functionality"""
     
-	def __init__(self, output_dir: Path = None):
+	def __init__(self, output_dir: Optional[Path] = None):
 		self.name = "ZBY"
 		self.priority = 3
 		self.output_dir = output_dir or Path("downloads")
@@ -104,7 +104,7 @@ class ZBYSource:
 			print(f"ZBY search error: {e}")
 		return items
 
-	def _extract_item_from_element(self, el) -> Standard | None:
+	def _extract_item_from_element(self, el) -> Optional[Standard]:
 		try:
 			title_el = el.query_selector("h4")
 			title = title_el.inner_text().replace("\n", " ").strip() if title_el else ""
@@ -150,7 +150,7 @@ class ZBYSource:
 		except Exception:
 			return None
 
-	def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple[Path | None, list[str]]:
+	def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
 		logs = []
 		def emit(msg: str):
 			logs.append(msg)

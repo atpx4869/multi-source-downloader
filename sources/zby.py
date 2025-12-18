@@ -7,7 +7,7 @@ to include in frozen executables. If Playwright is needed it will be loaded
 only at runtime by explicit callers.
 """
 from pathlib import Path
-from typing import List
+from typing import List, Union
 import re
 import tempfile
 import shutil
@@ -49,7 +49,7 @@ class ZBYSource:
     name = "ZBY"
     priority = 3
 
-    def __init__(self, output_dir: Path | str = "downloads"):
+    def __init__(self, output_dir: Union[Path, str] = "downloads"):
         od = Path(output_dir)
         try:
             if (isinstance(output_dir, str) and output_dir == "downloads") or (isinstance(output_dir, Path) and not Path(output_dir).is_absolute()):
@@ -140,6 +140,7 @@ class ZBYSource:
             from urllib3.util.retry import Retry
 
             session = requests.Session()
+            session.trust_env = False  # 忽略系统代理
             retries = Retry(total=2, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
             adapter = HTTPAdapter(max_retries=retries)
             session.mount('https://', adapter)
@@ -152,8 +153,15 @@ class ZBYSource:
                 if rows:
                     for row in rows:
                         try:
-                            std_no = (row.get('standardNumDeal') or row.get('standardNum') or '').strip()
+                            # Prefer standardNum (contains HTML) over standardNumDeal (stripped)
+                            # but we must strip HTML tags from standardNum
+                            raw_no = row.get('standardNum') or row.get('standardNumDeal') or ''
+                            std_no = re.sub(r'<[^>]+>', '', raw_no).strip()
+                            
                             name = (row.get('standardName') or '').strip()
+                            # Also strip HTML from name just in case
+                            name = re.sub(r'<[^>]+>', '', name).strip()
+                            
                             has_pdf = bool(int(row.get('hasPdf', 0))) if row.get('hasPdf') is not None else False
                             # standardStatus is provided as numeric code by the backend; map to human-readable labels
                             from .status_map import map_status

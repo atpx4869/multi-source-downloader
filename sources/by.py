@@ -5,7 +5,7 @@ BY Source - 标院内网标准管理系统 (http://172.16.100.72:8080)
 import re
 import requests
 from pathlib import Path
-from typing import List, Callable, Optional
+from typing import List, Callable, Optional, Dict, Any
 
 from core.models import Standard
 
@@ -75,9 +75,9 @@ def _login(session: requests.Session) -> bool:
         return False
 
 
-def _search_by(session: requests.Session, keyword: str) -> List[dict]:
+def _search_by(session: requests.Session, keyword: str) -> List[Dict]:
     """检索标准，返回包含元数据和下载信息的字典列表"""
-    def parse_page(html: str) -> List[dict]:
+    def parse_page(html: str) -> List[Dict]:
         blocks = re.findall(r'<table class="mt20".*?rpStand_HidSIId_\d".*?</table>', html, flags=re.S)
         page_results = []
         for idx, block in enumerate(blocks, start=1):
@@ -112,7 +112,7 @@ def _search_by(session: requests.Session, keyword: str) -> List[dict]:
         return 1
 
     url = f"{BASE}/Customer/StandSerarch/StandInfoList.aspx?A100={keyword}&A298="
-    results: List[dict] = []
+    results: List[Dict] = []
 
     try:
         resp = session.get(url, timeout=TIMEOUT)
@@ -174,6 +174,7 @@ class BYSource:
         self.name = "BY"
         self.priority = 2
         self.session = requests.Session()
+        self.session.trust_env = False  # 忽略系统代理
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
@@ -230,7 +231,7 @@ class BYSource:
         
         return items
     
-    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple[Path | None, list[str]]:
+    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
         """Download from BY source"""
         logs = []
         

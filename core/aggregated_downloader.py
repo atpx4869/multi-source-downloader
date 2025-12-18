@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import re
 import time
 import sys
@@ -26,7 +26,7 @@ class SourceHealth:
 
 
 class AggregatedDownloader:
-    def __init__(self, output_dir: str = "downloads", enable_sources: List[str] | None = None):
+    def __init__(self, output_dir: str = "downloads", enable_sources: Optional[List[str]] = None):
         self.output_dir = Path(output_dir)
         self.sources: List[object] = []
         self.health_cache: Dict[str, SourceHealth] = {}
@@ -305,7 +305,7 @@ class AggregatedDownloader:
             sources=[src_name],
         )
 
-    def download(self, item: Standard, log_cb=None) -> tuple[Path | None, list[str]]:
+    def download(self, item: Standard, log_cb=None) -> tuple:
         """按优先级下载（GBW > BY > ZBY），逐个尝试直到成功。返回(路径或None, 日志列表)。"""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logs: list[str] = []
@@ -330,6 +330,8 @@ class AggregatedDownloader:
         # 获取该标准在各源的 PDF 状态（用于显示）
         meta_map = item.source_meta if isinstance(item.source_meta, dict) else {}
         
+        emit(f"DEBUG: Item sources: {item.sources}")
+
         # 构建下载尝试顺序：严格按照全局 PRIORITY（GBW > BY > ZBY）去匹配可用的 item.sources
         ordered_sources = []
         try:

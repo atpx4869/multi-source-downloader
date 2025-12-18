@@ -38,4 +38,19 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
     if j is None:
         return []
     rows = find_rows(j)
+    
+    # 修正状态逻辑：如果状态为废止(2)但实施日期在未来，则修正为即将实施(3)
+    import time
+    current_date = time.strftime("%Y-%m-%d")
+    for row in rows:
+        try:
+            status = str(row.get('standardStatus', ''))
+            impl_date = str(row.get('standardUsefulDate') or row.get('standardUsefulTime') or row.get('standardUseDate') or row.get('implement') or '')[:10]
+            
+            # 如果状态是废止(2)且有实施日期且实施日期大于当前日期
+            if status == '2' and impl_date and impl_date > current_date:
+                row['standardStatus'] = '3'  # 修正为即将实施
+        except Exception:
+            pass
+            
     return rows or []

@@ -1,6 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List, Dict
 import re
 
 
@@ -23,8 +24,8 @@ class Standard:
     implement: str = ""
     status: str = ""
     has_pdf: bool = False
-    source_meta: dict = field(default_factory=dict)
-    sources: list[str] = field(default_factory=list)
+    source_meta: Dict = field(default_factory=dict)
+    sources: List[str] = field(default_factory=list)
 
     def display_label(self) -> str:
         return f"{self.std_no or '-'} {self.name or ''}".strip()

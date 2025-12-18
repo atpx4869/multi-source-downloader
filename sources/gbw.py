@@ -20,6 +20,7 @@ class GBWSource:
         self.priority = 1
         self.base_url = "https://std.samr.gov.cn"
         self.session = requests.Session()
+        self.session.trust_env = False  # 忽略系统代理设置，避免 ProxyError
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
@@ -107,7 +108,7 @@ class GBWSource:
             pass
         return ""
     
-    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple[Path | None, list[str]]:
+    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
         """Download PDF from GBW - requires browser automation for captcha"""
         logs = []
 
@@ -145,7 +146,8 @@ class GBWSource:
         try:
             from playwright.sync_api import sync_playwright
             playwright_available = True
-        except Exception:
+        except Exception as e:
+            emit(f"GBW: Playwright 导入失败: {e}")
             playwright_available = False
 
         # Check OCR availability
@@ -162,7 +164,7 @@ class GBWSource:
             ocr = None
 
         if not playwright_available:
-            emit("GBW: Playwright 未安装，无法自动处理验证码")
+            emit("GBW: Playwright 未安装或导入失败，无法自动处理验证码")
             return None, logs
 
         try:

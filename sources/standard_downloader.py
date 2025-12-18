@@ -8,7 +8,7 @@ It is intentionally small and self-contained so the packaged exe will
 have a usable ZBY implementation without extra external packages.
 """
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Union, Optional
 
 try:
     from core.models import Standard
@@ -25,7 +25,7 @@ class StandardDownloader:
     - download_standard(meta) -> Path | None
     """
 
-    def __init__(self, output_dir: Path | str = "downloads"):
+    def __init__(self, output_dir: Union[Path, str] = "downloads"):
         self.output_dir = Path(output_dir)
         self._impl = None
 
@@ -54,7 +54,7 @@ class StandardDownloader:
                 return []
         return []
 
-    def download_standard(self, meta: Any) -> Path | None:
+    def download_standard(self, meta: Any) -> Optional[Path]:
         """Download given meta (Standard or dict) and return Path or None."""
         if self._impl is None:
             try:

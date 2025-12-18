@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import re
+from typing import List, Dict, Optional, Any
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -99,6 +100,8 @@ def get_aggregated_downloader(enable_sources=None, output_dir=None):
     """返回一个复用的 AggregatedDownloader 实例（按 enable_sources+output_dir 缓存）。
     如果 AggregatedDownloader 未导入或无法实例化，则返回 None 或抛出原始异常。
     """
+    if output_dir is None:
+        output_dir = "downloads"
     key = (tuple(enable_sources) if enable_sources else None, output_dir)
     with _AD_CACHE_LOCK:
         inst = _AD_CACHE.get(key)
@@ -356,7 +359,7 @@ class SearchThread(QtCore.QThread):
     error = QtCore.Signal(str)
     progress = QtCore.Signal(int, int, str)  # current, total, message
 
-    def __init__(self, keyword: str, sources: list[str] | None = None, page: int = 1, page_size: int = 20, output_dir: str = "downloads"):
+    def __init__(self, keyword: str, sources: Optional[List[str]] = None, page: int = 1, page_size: int = 20, output_dir: str = "downloads"):
         super().__init__()
         self.keyword = keyword
         self.sources = sources
@@ -434,7 +437,7 @@ class BackgroundSearchThread(QtCore.QThread):
     finished = QtCore.Signal(dict)  # 返回 {std_no_normalized: Standard} 缓存
     progress = QtCore.Signal(str)  # 状态文本
 
-    def __init__(self, keyword: str, sources: list[str], page: int = 1, page_size: int = 20, output_dir: str = "downloads"):
+    def __init__(self, keyword: str, sources: List[str], page: int = 1, page_size: int = 20, output_dir: str = "downloads"):
         super().__init__()
         self.keyword = keyword
         self.sources = sources  # 要搜索的源，如 ["GBW", "BY"]
@@ -469,19 +472,11 @@ class BackgroundSearchThread(QtCore.QThread):
                         # 标准化 std_no 作为 key
                         key = _STD_NO_RE.sub("", it.std_no or "").lower()
                         if key not in cache:
-                            cache[key] = it
-                        else:
-                            # 合并源信息
-                            existing = cache[key]
-                            if src_name not in existing.sources:
-                                existing.sources.append(src_name)
-                            existing.has_pdf = existing.has_pdf or it.has_pdf
-                            # 合并 source_meta
-                            if isinstance(it.source_meta, dict):
-                                if not isinstance(existing.source_meta, dict):
-                                    existing.source_meta = {}
-                                for k, v in it.source_meta.items():
-                                    existing.source_meta[k] = v
+                            cache[key] = {}
+                        
+                        # 按源存储 Standard 对象，便于后续精确合并与优先级判断
+                        s_name = it.sources[0] if it.sources else src_name
+                        cache[key][s_name] = it
                     
                     self.log.emit(f"   ✓ {src_name} 完成: {len(items)} 条")
                 except Exception as e:
@@ -504,7 +499,7 @@ class DownloadThread(QtCore.QThread):
     finished = QtCore.Signal(int, int)
     progress = QtCore.Signal(int, int, str)  # current, total, message
 
-    def __init__(self, items: list[dict], output_dir: str = "downloads", background_cache: dict = None):
+    def __init__(self, items: List[dict], output_dir: str = "downloads", background_cache: dict = None):
         super().__init__()
         self.items = items
         self.output_dir = output_dir
@@ -529,24 +524,7 @@ class DownloadThread(QtCore.QThread):
                 # 获取原始对象
                 obj = it.get("obj")
 
-                # 尝试从后台缓存合并更多源信息
-                if obj and self.background_cache:
-                    key = _STD_NO_RE.sub("", std_no or "").lower()
-                    cached = self.background_cache.get(key)
-                    if cached:
-                        # 合并源信息
-                        for src in cached.sources:
-                            if src not in obj.sources:
-                                obj.sources.append(src)
-                        # 合并 source_meta
-                        if isinstance(cached.source_meta, dict):
-                            if not isinstance(obj.source_meta, dict):
-                                obj.source_meta = {}
-                            for k, v in cached.source_meta.items():
-                                if k not in obj.source_meta:
-                                    obj.source_meta[k] = v
-                        # 合并后台数据后只输出简要提示，避免过度冗长的源列表
-                        self.log.emit(f"   ↳ 已合并后台数据")
+                # (已移除旧的后台缓存合并逻辑，现在由 on_bg_search_finished 统一处理)
 
                 # 在下载前记录对象的来源信息，便于排查失败时的来源
                     # 不再打印完整的 source/meta 调试信息，避免泄露冗长内容
@@ -644,8 +622,9 @@ class StandardTableModel(QtCore.QAbstractTableModel):
     """简单的表格模型，替代 QTableWidget 用于更高效渲染和批量操作"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._items: list[dict] = []
-        self._headers = ["选中", "序号", "标准号", "名称", "来源", "发布日期", "实施日期", "状态", "文本"]
+        self._items: List[dict] = []
+        # 调整列顺序：来源放到状态后面，文本前面
+        self._headers = ["选中", "序号", "标准号", "名称", "发布日期", "实施日期", "状态", "来源", "文本"]
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._items)
@@ -668,15 +647,15 @@ class StandardTableModel(QtCore.QAbstractTableModel):
             if c == 3:
                 return item.get("name", "")
             if c == 4:
+                return item.get("publish", "")
+            if c == 5:
+                return item.get("implement", "")
+            if c == 6:
+                return item.get("status", "")
+            if c == 7:
                 # 显示来源（优先使用合并后的 _display_source）
                 disp = item.get('_display_source') or (item.get('sources')[0] if item.get('sources') else None)
                 return disp or ""
-            if c == 5:
-                return item.get("publish", "")
-            if c == 6:
-                return item.get("implement", "")
-            if c == 7:
-                return item.get("status", "")
             if c == 8:
                 return "✓" if item.get("has_pdf") else "-"
         if role == QtCore.Qt.BackgroundRole and c == 0 and item.get("_selected"):
@@ -704,7 +683,7 @@ class StandardTableModel(QtCore.QAbstractTableModel):
         return False
         return False
 
-    def set_items(self, items: list[dict]):
+    def set_items(self, items: List[dict]):
         self.beginResetModel()
         self._items = []
         for i, it in enumerate(items, start=1):
@@ -714,7 +693,7 @@ class StandardTableModel(QtCore.QAbstractTableModel):
             self._items.append(copy)
         self.endResetModel()
 
-    def get_selected_items(self) -> list[dict]:
+    def get_selected_items(self) -> List[dict]:
         return [it for it in self._items if it.get("_selected")]
 
     def set_all_selected(self, selected: bool):
@@ -1101,14 +1080,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
-        self.table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        
+        # 设置列宽模式
+        header = self.table.horizontalHeader()
+        # 0:选中 - 固定宽度
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
         self.table.setColumnWidth(0, 45)
+        # 1:序号 - 固定宽度
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
         self.table.setColumnWidth(1, 50)
-        self.table.setColumnWidth(4, 100)
-        self.table.setColumnWidth(5, 100)
-        self.table.setColumnWidth(6, 100)
-        self.table.setColumnWidth(7, 50)
+        # 2:标准号 - 内容自适应
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        # 3:名称 - 自动伸缩填充剩余空间
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        # 4:来源 - 内容自适应
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
+        # 5:发布日期 - 内容自适应
+        header.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeToContents)
+        # 6:实施日期 - 内容自适应
+        header.setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeToContents)
+        # 7:状态 - 内容自适应
+        header.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeToContents)
+        # 8:文本 - 固定宽度
+        header.setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(8, 50)
+
         # 美化：专业配色（深蓝头、浅灰行）
         header = self.table.horizontalHeader()
         # 将 CHECKBOX_STYLE 追加到表头和表格样式，避免局部样式覆盖全局复选框样式
@@ -1370,16 +1366,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.addPermanentWidget(self.lbl_bg_status)
 
         # 存储
-        self.current_items: list[dict] = []
-        self.all_items: list[dict] = []  # 完整列表，用于筛选
-        self.filtered_items: list[dict] = []  # 筛选后的列表
+        self.current_items: List[dict] = []
+        self.all_items: List[dict] = []  # 完整列表，用于筛选
+        self.filtered_items: List[dict] = []  # 筛选后的列表
         self.background_cache: dict = {}  # 后台搜索缓存 {std_no_normalized: Standard}
         self.last_keyword: str = ""  # 上次搜索关键词
 
         # 线程占位
-        self.search_thread: SearchThread | None = None
-        self.download_thread: DownloadThread | None = None
-        self.bg_search_thread: BackgroundSearchThread | None = None
+        self.search_thread: Optional[SearchThread] = None
+        self.download_thread: Optional[DownloadThread] = None
+        self.bg_search_thread: Optional[BackgroundSearchThread] = None
         
         # 初始化显示
         self.update_path_display()
@@ -1669,13 +1665,111 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_bg_status.setText(message)
     
     def on_bg_search_finished(self, cache: dict):
-        """后台搜索完成"""
+        """后台搜索完成，合并数据并刷新界面"""
         self.background_cache = cache
-        self.lbl_bg_status.setText(f"✓ 后台数据已就绪 ({len(cache)}条)")
-        # 3秒后清除状态文本
+        
+        updated_count = 0
+        
+        # 遍历当前显示的列表（主要是 ZBY 结果）
+        for item in self.current_items:
+            std_no = item.get("std_no", "")
+            key = _STD_NO_RE.sub("", std_no).lower()
+            
+            # 获取该标准的所有可用源数据
+            candidates = []
+            
+            # 1. 当前项本身 (通常是 ZBY)
+            if item.get("obj"):
+                # 假设当前项主要是 ZBY，或者已有的源
+                # 注意：item['obj'].sources 可能包含多个，但初始搜索通常只有一个
+                srcs = item["obj"].sources
+                main_src = srcs[0] if srcs else "ZBY"
+                candidates.append((main_src, item["obj"]))
+            
+            # 2. 后台搜索结果 (GBW, BY)
+            # cache 结构: { std_no_key: { 'GBW': obj, 'BY': obj } }
+            bg_results = cache.get(key, {})
+            for src, obj in bg_results.items():
+                candidates.append((src, obj))
+            
+            if not candidates:
+                continue
+                
+            # 确定最优源 (Best Source)
+            # 优先级: GBW > BY > ZBY (如果有文本)
+            # 如果都没有文本，也按此顺序
+            
+            def score_candidate(cand):
+                src, obj = cand
+                score = 0
+                if obj.has_pdf:
+                    score += 100
+                
+                if src == "GBW":
+                    score += 3
+                elif src == "BY":
+                    score += 2
+                elif src == "ZBY":
+                    score += 1
+                return score
+            
+            candidates.sort(key=score_candidate, reverse=True)
+            best_src, best_obj = candidates[0]
+            
+            # 更新显示用的来源
+            item['_display_source'] = best_src
+            
+            # 合并数据到 item['obj']
+            target_obj = item["obj"]
+            
+            # 收集所有源
+            all_sources = set(target_obj.sources)
+            for src, obj in candidates:
+                for s in obj.sources:
+                    all_sources.add(s)
+                # 合并 source_meta
+                if obj.source_meta:
+                    if not target_obj.source_meta:
+                        target_obj.source_meta = {}
+                    target_obj.source_meta.update(obj.source_meta)
+            
+            target_obj.sources = list(all_sources)
+            
+            # 更新状态 (如果 ZBY 状态为空或废止，而最优源状态更好，则更新)
+            # 优先使用 best_obj 的状态，因为它通常是最准确的
+            if best_obj.status:
+                 # 仅当原状态为空，或原状态为废止但新状态为现行/即将实施时更新
+                 # 或者直接信任 best_obj
+                 item["status"] = best_obj.status
+                 target_obj.status = best_obj.status
+            
+            # has_pdf 取并集
+            has_pdf_any = any(obj.has_pdf for _, obj in candidates)
+            item["has_pdf"] = has_pdf_any
+            target_obj.has_pdf = has_pdf_any
+            
+            # 更新发布/实施日期 (如果缺失)
+            if not item["publish"] and best_obj.publish:
+                item["publish"] = best_obj.publish
+                target_obj.publish = best_obj.publish
+            if not item["implement"] and best_obj.implement:
+                item["implement"] = best_obj.implement
+                target_obj.implement = best_obj.implement
+                
+            updated_count += 1
+
+        # 刷新表格
+        if updated_count > 0:
+            self.table_model.set_items(self.current_items)
+            self.update_selection_count()
+            # 仅在有更新时记录日志，避免刷屏
+            if updated_count > 5:
+                self.append_log(f"✅ 已根据后台数据优化 {updated_count} 条标准信息的来源与状态")
+
+        self.lbl_bg_status.setText(f"✓ 后台数据已合并")
         QtCore.QTimer.singleShot(5000, lambda: self.lbl_bg_status.setText(""))
 
-    def on_search_results(self, rows: list[dict]):
+    def on_search_results(self, rows: List[dict]):
         # 按状态排序：现行有效 > 即将实施 > 其他
         def status_sort_key(item):
             status = item.get("status", "")

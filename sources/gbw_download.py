@@ -8,6 +8,7 @@ import io
 import re
 import time
 from pathlib import Path
+from typing import List
 import requests
 from PIL import Image, ImageEnhance, ImageOps
 
@@ -58,7 +59,7 @@ def get_baidu_token() -> str:
         "client_secret": BAIDU_OCR_SK,
     }
     try:
-        resp = requests.post(url, params=params, timeout=5)
+        resp = requests.post(url, params=params, timeout=5, proxies={"http": None, "https": None})
         data = resp.json()
         token = data.get("access_token", "")
         expires_in = data.get("expires_in", 0)
@@ -80,6 +81,7 @@ def _baidu_call(img_b64: str, token: str, endpoint: str) -> str:
             data={"image": img_b64, "language_type": "ENG"},
             headers=headers,
             timeout=5,
+            proxies={"http": None, "https": None}
         )
         data = resp.json()
         words = data.get("words_result", [])
@@ -105,9 +107,9 @@ def custom_ocr(img_bytes: bytes) -> str:
     for mode, payload in tries:
         try:
             if mode == "json":
-                resp = requests.post(CUSTOM_OCR_URL, json=payload, timeout=5, verify=False)
+                resp = requests.post(CUSTOM_OCR_URL, json=payload, timeout=5, verify=False, proxies={"http": None, "https": None})
             else:
-                resp = requests.post(CUSTOM_OCR_URL, data=payload, timeout=5, verify=False)
+                resp = requests.post(CUSTOM_OCR_URL, data=payload, timeout=5, verify=False, proxies={"http": None, "https": None})
             data = resp.json()
             for key in ("data", "text", "result", "code", "message"):
                 if key in data and isinstance(data[key], str):
@@ -123,7 +125,7 @@ def custom_ocr(img_bytes: bytes) -> str:
     return ""
 
 
-def _enhance_image_bytes(img_bytes: bytes) -> list[bytes]:
+def _enhance_image_bytes(img_bytes: bytes) -> List[bytes]:
     variants = [img_bytes]
     try:
         with Image.open(io.BytesIO(img_bytes)) as im:
@@ -248,12 +250,14 @@ def sanitize_filename(name: str) -> str:
 
 def fetch_captcha(session: requests.Session, show_url: str, out_file: Path) -> bytes:
     ts = int(time.time() * 1000)
-    candidates = [f"{CAPTCHA_URL}_{ts}", f"{CAPTCHA_URL}?_{ts}"]
+    # 恢复为 http，但显式禁用代理
+    candidates = [f"{CAPTCHA_URL}?_{ts}"]
     headers = {"User-Agent": UA, "Referer": show_url}
     last_err = None
     for url in candidates:
         try:
-            resp = session.get(url, headers=headers, timeout=15)
+            # 显式禁用代理
+            resp = session.get(url, headers=headers, timeout=15, proxies={"http": None, "https": None})
             resp.raise_for_status()
             out_file.write_bytes(resp.content)
             return resp.content
@@ -271,7 +275,8 @@ def verify_code(session: requests.Session, code: str, show_url: str) -> str:
         "X-Requested-With": "XMLHttpRequest",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     }
-    resp = session.post(VERIFY_URL, data={"verifyCode": code}, headers=headers, timeout=10)
+    # 显式禁用代理
+    resp = session.post(VERIFY_URL, data={"verifyCode": code}, headers=headers, timeout=10, proxies={"http": None, "https": None})
     resp.raise_for_status()
     return resp.text.strip()
 
@@ -279,7 +284,7 @@ def verify_code(session: requests.Session, code: str, show_url: str) -> str:
 def download_file(session: requests.Session, hcno: str, show_url: str, out_path: Path) -> None:
     url = f"{VIEW_URL}?hcno={hcno}"
     headers = {"User-Agent": UA, "Referer": show_url}
-    with session.get(url, headers=headers, stream=True, timeout=60) as r:
+    with session.get(url, headers=headers, stream=True, timeout=60, proxies={"http": None, "https": None}) as r:
         r.raise_for_status()
         with out_path.open("wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
@@ -299,7 +304,8 @@ def download_with_ocr(hcno: str, outfile: Path, max_attempts: int = 8, logger=No
 
     show_url = f"{BASE}/bzgk/gb/showGb?type=download&hcno={hcno}"
     session = requests.Session()
-    session.get(show_url, headers={"User-Agent": UA, "Referer": "https://openstd.samr.gov.cn/"}, timeout=15)
+    session.trust_env = False  # 忽略系统代理
+    session.get(show_url, headers={"User-Agent": UA, "Referer": "https://openstd.samr.gov.cn/"}, timeout=15, proxies={"http": None, "https": None})
     captcha_path = Path("captcha.jpg")
 
     for attempt in range(1, max_attempts + 1):
