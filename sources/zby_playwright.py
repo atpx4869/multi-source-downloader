@@ -177,6 +177,47 @@ class ZBYSource:
 				browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
 				context = browser.new_context()
 				page = context.new_page()
+				
+				# 定义UUID捕获函数
+				found = {"uuid": None}
+				def capture_req(r):
+					if "immdoc" in r.url and "/doc/" in r.url:
+						m = re.search(r'immdoc/([a-zA-Z0-9-]+)/doc', r.url)
+						if m:
+							found["uuid"] = m.group(1)
+				
+				# 若 meta 提供 standardId，优先直接打开详情页
+				std_id = None
+				if isinstance(meta, dict):
+					std_id = meta.get("standardId") or meta.get("id") or meta.get("standardid")
+				if std_id:
+					emit(f"ZBY: 直接打开详情页 (standardId={std_id})...")
+					page.on("request", capture_req)
+					try:
+						# 正确的 URL 格式：/standardDetail?standardId=...&docStatus=0
+						detail_url = f"{self.base_url}/standardDetail?standardId={std_id}&docStatus=0"
+						r = page.goto(detail_url, timeout=45000)
+						emit(f"ZBY: 页面加载完成，等待资源加载...")
+						
+						# 等待网络请求，给页面足够时间加载 iframe 和触发 immdoc 请求
+						time.sleep(3)
+						
+						# 模拟滚动来触发更多资源加载（如果是瀑布流）
+						for _ in range(5):
+							page.evaluate("() => { window.scrollBy(0, 500); }")
+							time.sleep(0.5)
+						
+						if found["uuid"]:
+							emit(f"ZBY: 捕获到 UUID: {found['uuid'][:8]}...")
+							cookies = context.cookies()
+							browser.close()
+							return self._download_images(found["uuid"], item.filename(), output_dir, cookies, emit)
+						else:
+							emit(f"ZBY: 未捕获到 UUID，尝试搜索页面方式...")
+					except Exception as e:
+						emit(f"ZBY: 直接打开详情页失败: {e}")
+				
+				# 回退：搜索页面获取标准
 				# 尝试最多三次以提高成功率并延长超时
 				tried = 0
 				success = False
@@ -203,7 +244,6 @@ class ZBYSource:
 					browser.close()
 					return None, logs
 				target = page.query_selector(".stdList")
-				found = {"uuid": None}
 				# 首先尝试从列表项里找到详情页链接并直接打开，避免新页面事件的不稳定性
 				try:
 					link = None
