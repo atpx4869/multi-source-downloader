@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, List
 import requests
 import logging
 import time
+import json
 
 _LOGGER = logging.getLogger(__name__)
 # Simple in-memory cache keyed by (method,url,params,json) -> response JSON
@@ -9,7 +10,14 @@ _SIMPLE_CACHE: Dict[str, Any] = {}
 
 
 def _cache_key(method: str, url: str, params: Optional[Dict[str, Any]], json_body: Optional[Dict[str, Any]]) -> str:
-    return f"{method.upper()} {url} | params:{repr(params)} | json:{repr(json_body)}"
+    try:
+        p_str = json.dumps(params, sort_keys=True) if params else "None"
+        j_str = json.dumps(json_body, sort_keys=True) if json_body else "None"
+    except (TypeError, ValueError):
+        # Fallback to repr if not JSON serializable
+        p_str = repr(params)
+        j_str = repr(json_body)
+    return f"{method.upper()} {url} | params:{p_str} | json:{j_str}"
 
 
 def call_api(session: Optional[requests.Session], method: str, url: str, *, params: Optional[Dict[str, Any]] = None,
@@ -20,7 +28,13 @@ def call_api(session: Optional[requests.Session], method: str, url: str, *, para
     Adds retry with exponential backoff and a very small simple cache when `use_cache` is True.
     """
     sess = session or requests.Session()
-    sess.trust_env = False  # 禁用系统代理
+    # 默认禁用系统代理：避免用户机器上配置的代理/抓包环境干扰请求。
+    # 注意：这里不通过 request(..., proxies=...) 传参，以兼容 tests 中 monkeypatch 的简化签名。
+    sess.trust_env = False
+    try:
+        sess.proxies = {"http": None, "https": None}
+    except Exception:
+        pass
     key = None
     if use_cache:
         key = _cache_key(method, url, params, json_body)
@@ -43,12 +57,32 @@ def call_api(session: Optional[requests.Session], method: str, url: str, *, para
             kwargs['timeout'] = timeout
 
             _LOGGER.debug('http_search calling %s %s attempt=%d kwargs_keys=%s', method, url, attempt, list(kwargs.keys()))
-            # 显式禁用代理
-            kwargs['proxies'] = {"http": None, "https": None}
+            # 禁用系统代理：优先使用 Session.trust_env=False。
+            # 某些测试会 monkeypatch session.get/post 为简化签名的假函数，
+            # 若强行传 proxies= 会导致 TypeError，因此这里采用“可选回退”。
             if method.upper() == 'GET':
-                resp = sess.get(url, **kwargs)
+                try:
+                    resp = sess.get(url, **kwargs)
+                except TypeError:
+                    # Some test doubles don't accept unexpected kwargs.
+                    retry_kwargs = {}
+                    if params is not None:
+                        retry_kwargs['params'] = params
+                    if headers is not None:
+                        retry_kwargs['headers'] = headers
+                    retry_kwargs['timeout'] = timeout
+                    resp = sess.get(url, **retry_kwargs)
             else:
-                resp = sess.post(url, **kwargs)
+                try:
+                    resp = sess.post(url, **kwargs)
+                except TypeError:
+                    retry_kwargs = {}
+                    if headers is not None:
+                        retry_kwargs['headers'] = headers
+                    if json_body is not None:
+                        retry_kwargs['json'] = json_body
+                    retry_kwargs['timeout'] = timeout
+                    resp = sess.post(url, **retry_kwargs)
 
             if resp is None:
                 raise RuntimeError('no response')

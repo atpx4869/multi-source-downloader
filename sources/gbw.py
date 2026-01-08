@@ -11,6 +11,11 @@ from core.models import Standard
 from .gbw_download import get_hcno, download_with_ocr, sanitize_filename, prewarm_ocr
 from .http_search import call_api, find_rows
 
+# Pre-compile regex patterns
+_HTML_TAG_RE = re.compile(r'<[^>]+>')
+_WHITESPACE_RE = re.compile(r'\s+')
+_STD_CODE_SLASH_RE = re.compile(r'([A-Z])\s*/\s*([A-Z])')
+
 
 class GBWSource:
     """GBW (国标委) Data Source"""
@@ -25,18 +30,13 @@ class GBWSource:
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
-        # 预热 OCR 模型
-        try:
-            prewarm_ocr()
-        except Exception:
-            pass
     
     def _clean_text(self, text: str) -> str:
         """Clean XML tags from text, preserving inner content"""
         if not text:
             return ""
         # Remove tags but keep inner text
-        cleaned = re.sub(r'<[^>]+>', '', text)
+        cleaned = _HTML_TAG_RE.sub('', text)
         return cleaned.strip()
     
     def _parse_std_code(self, raw_code: str) -> str:
@@ -45,13 +45,13 @@ class GBWSource:
             return ""
         
         # 直接移除所有 HTML 标签并清理空白
-        cleaned = re.sub(r'<[^>]+>', '', raw_code)
+        cleaned = _HTML_TAG_RE.sub('', raw_code)
         # 将多个空格合并为一个，并处理常见的格式问题
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = _WHITESPACE_RE.sub(' ', cleaned).strip()
         
         # 针对 GB/T 这种中间可能有斜杠但被拆分的情况进行修正
         # 例如 "GB / T" -> "GB/T"
-        cleaned = re.sub(r'([A-Z])\s*/\s*([A-Z])', r'\1/\2', cleaned)
+        cleaned = _STD_CODE_SLASH_RE.sub(r'\1/\2', cleaned)
         
         return cleaned
     
@@ -174,7 +174,7 @@ class GBWSource:
             if log_cb:
                 log_cb(msg)
 
-        emit("GBW: 尝试使用请求(非浏览器)方式下载（优先）...")
+        emit("GBW: 开始下载...")
         # 尝试使用 requests 风格的下载实现（无需浏览器），优先执行
         try:
             meta = item.source_meta
@@ -182,11 +182,9 @@ class GBWSource:
             # 优先从 meta 获取 hcno，如果没有则通过详情页获取
             hcno = meta.get("hcno") if isinstance(meta, dict) else None
             if not hcno or len(hcno) != 32:
-                emit(f"GBW: 正在从详情页获取 HCNO (ID: {item_id})...")
                 hcno = self._get_hcno(item_id)
             
             if hcno:
-                emit(f"GBW: 获取到 HCNO: {hcno}")
                 out_dir = output_dir or Path("downloads")
                 out_dir.mkdir(parents=True, exist_ok=True)
                 try:

@@ -37,59 +37,19 @@ class AggregatedDownloader:
             "ZBY": ("sources.zby", "ZBYSource"),
         }
         candidates: List[Tuple[str, object]] = []
+        
+        # Use centralized loader
+        from core.loader import load_source_class
+        
         for name, (modname, clsname) in mapping.items():
-            try:
-                mod = __import__(modname, fromlist=[clsname])
-                cls = getattr(mod, clsname)
+            cls, error = load_source_class(modname, clsname)
+            if cls:
                 candidates.append((name, cls))
-            except Exception as exc:
-                # 记录到 health_cache，继续其他源
+                self.health_cache.pop(name, None)
+            else:
                 self.health_cache[name] = SourceHealth(name)
-                self.health_cache[name].error = str(exc)
-                # Try a fallback: load the module directly from the repository sources/<mod>.py
-                try:
-                    import importlib.util as _il
-                    import types as _types
-                    rel_path = Path(*modname.split('.')).with_suffix('.py')
-                    # try multiple candidate roots: current file ancestors, cwd, home
-                    candidate_roots = []
-                    p = Path(__file__).resolve()
-                    for i in range(1, 6):
-                        try:
-                            candidate_roots.append(p.parents[i])
-                        except Exception:
-                            pass
-                    candidate_roots.append(Path.cwd())
-                    candidate_roots.append(Path.home())
-
-                    found = False
-                    for root in candidate_roots:
-                        candidate_file = root / rel_path
-                        if candidate_file.exists():
-                            try:
-                                # ensure package exists
-                                if 'sources' not in sys.modules:
-                                    pkg = _types.ModuleType('sources')
-                                    pkg.__path__ = [str(candidate_file.parent)]
-                                    sys.modules['sources'] = pkg
-                                spec = _il.spec_from_file_location(modname, str(candidate_file))
-                                if spec and spec.loader:
-                                    m = _il.module_from_spec(spec)
-                                    spec.loader.exec_module(m)
-                                    sys.modules[modname] = m
-                                    cls = getattr(m, clsname)
-                                    candidates.append((name, cls))
-                                    # clear stored error
-                                    self.health_cache.pop(name, None)
-                                    found = True
-                                    break
-                            except Exception:
-                                continue
-                    if found:
-                        continue
-                except Exception:
-                    pass
-                print(f"跳过源 {name}：{exc}")
+                self.health_cache[name].error = error or "Unknown import error"
+                print(f"跳过源 {name}：{self.health_cache[name].error}")
         for name, cls in candidates:
             if enable_sources and name not in enable_sources:
                 continue

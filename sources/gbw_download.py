@@ -33,12 +33,17 @@ VERIFY_URL = f"{BASE}/bzgk/gb/verifyCode"
 VIEW_URL = f"{BASE}/bzgk/gb/viewGb"
 _baidu_token_cache = {"token": "", "expires_at": 0}
 _ppll_ocr_instance = None
+_OCR_PREWARMED = False
 
 
 def prewarm_ocr():
     """预热 OCR 模型，避免第一次下载时加载过慢"""
     global _ppll_ocr_instance
+    global _OCR_PREWARMED
+    if _OCR_PREWARMED:
+        return
     if not USE_PPLL_OCR:
+        _OCR_PREWARMED = True
         return
     
     # 提前检查 NumPy 版本。如果 >= 2.0，则跳过 PPLL OCR，防止 onnxruntime 导致 SystemError 崩溃
@@ -67,6 +72,8 @@ def prewarm_ocr():
             _ppll_ocr_instance.classification(buf.getvalue())
     except (Exception, SystemError, ImportError):
         pass
+    finally:
+        _OCR_PREWARMED = True
 
 
 def _normalize_text(text: str) -> str:
@@ -224,16 +231,16 @@ def ppll_ocr(img_bytes: bytes) -> str:
         
         # 1. 先尝试原始图片，使用标准置信度 (最快)
         text = _normalize_text(ocr.classification(img_bytes, conf=0.2, iou=0.45))
-        if text and len(text) == 4:
-            return text
+        if text:
+            return text[:4] if len(text) >= 4 else ""
             
         # 2. 如果失败，尝试增强后的图片
         candidates = _enhance_image_bytes(img_bytes)
         for buf in candidates:
             if buf == img_bytes: continue 
             text = _normalize_text(ocr.classification(buf, conf=0.15, iou=0.45))
-            if text and len(text) == 4:
-                return text
+            if text:
+                return text[:4] if len(text) >= 4 else ""
     except Exception:
         return ""
     return ""
@@ -368,8 +375,16 @@ def download_file(session: requests.Session, hcno: str, show_url: str, out_path:
                     f.write(chunk)
 
 
-def download_with_ocr(hcno: str, outfile: Path, max_attempts: int = 8, logger=None, session: requests.Session = None) -> bool:
-    def log(msg: str):
+def download_with_ocr(
+    hcno: str,
+    outfile: Path,
+    max_attempts: int = 8,
+    logger=None,
+    session: requests.Session = None,
+    *,
+    verbose: bool = False,
+) -> bool:
+    def _emit(msg: str):
         if not msg:
             return
         # 涉及保密，脱敏处理：隐藏所有网址
@@ -383,20 +398,31 @@ def download_with_ocr(hcno: str, outfile: Path, max_attempts: int = 8, logger=No
                 pass
         print(msg)
 
+    def log(msg: str):
+        """始终输出的重要日志（精简模式也会显示）。"""
+        _emit(msg)
+
+    def vlog(msg: str):
+        """仅在 verbose=True 时输出的细节日志。"""
+        if verbose:
+            _emit(msg)
+
     if session is None:
         session = requests.Session()
         session.trust_env = False  # 忽略系统代理
     
-    # 预热 OCR
+    # 预热 OCR（精简模式下不刷预热耗时；verbose 时保留）
     t_pre = time.time()
+    was_prewarmed = _OCR_PREWARMED
     prewarm_ocr()
-    log(f"OCR 预热耗时: {time.time()-t_pre:.2f}s")
+    if verbose and (not was_prewarmed):
+        vlog(f"OCR 预热耗时: {time.time()-t_pre:.2f}s")
     
     # 尝试两种类型：download (正式版) 和 online (预览版)
     # 对于“即将实施”的标准，通常只有 online 可用
     for gbw_type in ['download', 'online']:
         show_url = f"{BASE}/bzgk/gb/showGb?type={gbw_type}&hcno={hcno}"
-        log(f"GBW: 尝试类型 {gbw_type}...")
+        vlog(f"GBW: 尝试类型 {gbw_type}...")
         
         # 访问展示页以获取初始 Cookie
         t_show = time.time()
@@ -413,7 +439,7 @@ def download_with_ocr(hcno: str, outfile: Path, max_attempts: int = 8, logger=No
                 log(f"GBW: 类型 {gbw_type} 不可用 (无预览权限)")
                 continue
             
-            log(f"访问展示页耗时: {time.time()-t_show:.2f}s")
+            vlog(f"访问展示页耗时: {time.time()-t_show:.2f}s")
         except Exception as e:
             log(f"访问展示页失败: {e}")
             continue
@@ -423,8 +449,22 @@ def download_with_ocr(hcno: str, outfile: Path, max_attempts: int = 8, logger=No
         if USE_PPLL_OCR and USE_BAIDU_OCR:
             total_limit = max_attempts + 4 # 默认 8 + 4 = 12 次
 
-        success = False
+        # 统计与诊断：用于判断是 OCR 准确率低还是流程/会话问题
+        stats = {
+            "attempts": 0,
+            "captcha_html": 0,
+            "ocr_empty": 0,
+            "ocr_non4": 0,
+            "ocr_4": 0,
+            "verify_error": 0,
+            "verify_success": 0,
+            "verify_exc": 0,
+            "methods": {"PPLL": 0, "BAIDU": 0},
+        }
+        ppll_empty_streak = 0
+        baidu_early_used = 0
         for attempt in range(1, total_limit + 1):
+            stats["attempts"] += 1
             t_start = time.time()
             try:
                 ts = int(time.time() * 1000)
@@ -436,46 +476,109 @@ def download_with_ocr(hcno: str, outfile: Path, max_attempts: int = 8, logger=No
                 img_bytes = resp.content
                 # 如果返回的是 HTML 而不是图片，说明可能被拦截或类型不对
                 if b"<html" in img_bytes[:100].lower():
-                    log(f"[Attempt {attempt}] 获取验证码返回了 HTML，可能类型 {gbw_type} 不支持下载")
+                    log(f"GBW: 获取验证码返回了 HTML，可能类型 {gbw_type} 不支持下载")
+                    stats["captcha_html"] += 1
                     break
-                log(f"[Attempt {attempt}] 获取验证码耗时: {time.time()-t_cap:.2f}s")
+                vlog(f"[Attempt {attempt}] 获取验证码耗时: {time.time()-t_cap:.2f}s")
             except Exception as e:
-                log(f"[Attempt {attempt}] 获取验证码失败: {e}")
-                continue
-            
-            code = ""
-            if USE_PPLL_OCR and attempt <= 8:
-                code = ppll_ocr(img_bytes)
-            
-            if not code and USE_BAIDU_OCR:
-                if not USE_PPLL_OCR or attempt > 8:
-                    code = baidu_ocr(img_bytes)
-                
-            if not code or len(code) != 4:
-                log(f"[Attempt {attempt}] OCR 识别无效: {code}")
-                continue
-                
-            log(f"[Attempt {attempt}] OCR: {code}")
-            try:
-                resp_text = verify_code(session, code, show_url)
-                log(f"[Attempt {attempt}] 校验返回: {resp_text}")
-            except Exception as exc:
-                log(f"[Attempt {attempt}] 校验请求失败: {exc}")
+                vlog(f"[Attempt {attempt}] 获取验证码失败: {e}")
                 continue
 
-            norm = resp_text.lower()
-            if norm in ("true", "success", "ok", "1") or "成功" in resp_text:
+            # 同一张验证码上，按顺序尝试多种 OCR（减少“重复取验证码 + 日志刷屏”，提高成功概率）
+            ocr_candidates = []  # List[Tuple[str, str]] -> (method, code)
+
+            # 1) 优先本地 OCR（前 8 次优先走本地，避免全程走百度导致延迟）
+            if USE_PPLL_OCR and attempt <= 8:
+                c = ppll_ocr(img_bytes)
+                ocr_candidates.append(("PPLL", c))
+                if not c:
+                    ppll_empty_streak += 1
+                else:
+                    ppll_empty_streak = 0
+
+            # 2) 百度 OCR：
+            #    - 本地 OCR 连续为空时尽早穿插
+            #    - 或者在第 9+ 次（原策略）
+            #    - 注意：这里是“候选”，只有需要时才会真的走校验
+            if USE_BAIDU_OCR:
+                if (not USE_PPLL_OCR) or (attempt > 8):
+                    ocr_candidates.append(("BAIDU", None))
+                elif ppll_empty_streak >= 3 and baidu_early_used < 2:
+                    ocr_candidates.append(("BAIDU", None))
+                    baidu_early_used += 1
+
+            # 逐个方法尝试；若 PPLL 产出 4 位但校验 error，也会尝试 BAIDU（同一张图）
+            tried_methods = set()
+            had_verify_error = False
+            for method, code in ocr_candidates:
+                if method in tried_methods:
+                    continue
+                tried_methods.add(method)
+                if code is None:
+                    # 延迟执行：只有走到这里才真正调用百度
+                    if method == "BAIDU":
+                        code = baidu_ocr(img_bytes)
+
+                # 容错：OCR 偶尔会多出字符，先截断到 4 位再校验（错了服务器会返回 error）
+                if code and len(code) > 4:
+                    code = code[:4]
+
+                if not code:
+                    stats["ocr_empty"] += 1
+                    vlog(f"[Attempt {attempt}] OCR({method}) 无输出")
+                    continue
+                if len(code) != 4:
+                    stats["ocr_non4"] += 1
+                    vlog(f"[Attempt {attempt}] OCR({method}) 非4位: {code}")
+                    continue
+
+                stats["ocr_4"] += 1
+                stats["methods"][method] = stats["methods"].get(method, 0) + 1
+                vlog(f"[Attempt {attempt}] OCR({method}): {code}")
+
                 try:
-                    download_file(session, hcno, show_url, outfile, gbw_type=gbw_type)
-                    log(f"下载完成 ({gbw_type}): {outfile.name}")
-                    return True
+                    resp_text = verify_code(session, code, show_url)
+                    vlog(f"[Attempt {attempt}] 校验返回: {resp_text}")
                 except Exception as exc:
-                    log(f"下载失败 ({gbw_type}): {exc}")
-                    # 如果下载失败，可能是这个类型确实不支持下载，尝试下一个类型
-                    break
-        
-        if success:
-            return True
+                    stats["verify_exc"] += 1
+                    vlog(f"[Attempt {attempt}] 校验请求失败: {exc}")
+                    continue
+
+                norm = resp_text.lower()
+                if norm in ("true", "success", "ok", "1") or "成功" in resp_text:
+                    stats["verify_success"] += 1
+                    log(f"GBW: 验证码识别成功")
+                    try:
+                        download_file(session, hcno, show_url, outfile, gbw_type=gbw_type)
+                        log(f"下载完成 ({gbw_type}): {outfile.name}")
+                        vlog(
+                            f"GBW OCR统计({gbw_type}): 尝试={stats['attempts']} 4位输出={stats['ocr_4']} 校验error={stats['verify_error']} 成功={stats['verify_success']} | "
+                            f"PPLL={stats['methods'].get('PPLL',0)} BAIDU={stats['methods'].get('BAIDU',0)}"
+                        )
+                        return True
+                    except Exception as exc:
+                        log(f"下载失败 ({gbw_type}): {exc}")
+                        # 如果下载失败，可能是这个类型确实不支持下载，尝试下一个类型
+                        break
+                else:
+                    stats["verify_error"] += 1
+                    had_verify_error = True
+
+                    # 如果本地 OCR 给了 4 位但校验失败，并且还没试过百度，则补一次百度（同一张图）
+                    if method == "PPLL" and USE_BAIDU_OCR and "BAIDU" not in tried_methods:
+                        continue
+
+            # 日志节流：如果这一轮有校验失败，不再额外刷太多行
+            if verbose and had_verify_error and (attempt % 5 == 0):
+                vlog(f"[Attempt {attempt}] 连续校验失败累计: {stats['verify_error']}")
+
+        # 失败时输出一次汇总，帮助判断“识别率低”还是“流程问题”（成功路径不刷屏）
+        if stats.get("verify_success", 0) == 0:
+            log(
+                f"GBW OCR统计({gbw_type}): 尝试={stats['attempts']} HTML验证码={stats['captcha_html']} 空输出={stats['ocr_empty']} 非4位={stats['ocr_non4']} 4位输出={stats['ocr_4']} "
+                f"校验error={stats['verify_error']} 校验异常={stats['verify_exc']} 成功={stats['verify_success']} | "
+                f"PPLL={stats['methods'].get('PPLL',0)} BAIDU={stats['methods'].get('BAIDU',0)}"
+            )
             
     log("所有类型尝试完毕，均未成功。")
     return False
