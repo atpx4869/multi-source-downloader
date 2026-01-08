@@ -1,0 +1,16 @@
+{
+  "mode": "local",
+  "local_output_dir": "downloads",
+  "local_timeout": 30,
+  "remote_base_url": "http://127.0.0.1:8000",
+  "remote_timeout": 60,
+  "enable_sources": [
+    "gbw",
+    "by",
+    "zby"
+  ],
+  "search_limit": 200,
+  "verify_ssl": false,
+  "max_retries": 5,
+  "retry_delay": 2
+}

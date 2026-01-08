@@ -60,6 +60,9 @@ except Exception:
 import traceback
 import pandas as pd
 
+# 导入 API 配置
+from core.api_config import get_api_config
+
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
     PYSIDE_VER = 6
@@ -881,69 +884,204 @@ class StandardTableModel(QtCore.QAbstractTableModel):
 class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("设置")
+        self.setWindowTitle("设置 - API & 下载配置")
         self.setModal(True)
-        self.resize(480, 280)
+        self.resize(600, 500)
+        
+        self.api_config = get_api_config()
 
         layout = QtWidgets.QVBoxLayout()
 
-        # 来源选择
-        src_group = QtWidgets.QGroupBox("启用的数据源")
+        # ========== API 模式配置 ==========
+        api_group = QtWidgets.QGroupBox("⚙️ API 模式配置")
+        api_layout = QtWidgets.QVBoxLayout()
+        
+        # 模式选择
+        mode_hlayout = QtWidgets.QHBoxLayout()
+        mode_hlayout.addWidget(QtWidgets.QLabel("运行模式:"))
+        self.rb_local = QtWidgets.QRadioButton("📍 本地（进程内 API）")
+        self.rb_remote = QtWidgets.QRadioButton("🌐 远程（VPS 部署）")
+        self.rb_local.setChecked(self.api_config.is_local_mode())
+        self.rb_remote.setChecked(self.api_config.is_remote_mode())
+        self.rb_local.toggled.connect(self.on_mode_changed)
+        mode_hlayout.addWidget(self.rb_local)
+        mode_hlayout.addWidget(self.rb_remote)
+        mode_hlayout.addStretch()
+        api_layout.addLayout(mode_hlayout)
+        
+        # 本地模式配置
+        self.local_group = QtWidgets.QGroupBox("本地模式配置")
+        local_layout = QtWidgets.QGridLayout()
+        local_layout.addWidget(QtWidgets.QLabel("下载目录:"), 0, 0)
+        self.input_local_dir = QtWidgets.QLineEdit(self.api_config.local_output_dir)
+        self.input_local_dir.setPlaceholderText("downloads")
+        local_layout.addWidget(self.input_local_dir, 0, 1)
+        
+        local_layout.addWidget(QtWidgets.QLabel("请求超时 (秒):"), 1, 0)
+        self.spin_local_timeout = QtWidgets.QSpinBox()
+        self.spin_local_timeout.setValue(self.api_config.local_timeout)
+        self.spin_local_timeout.setMinimum(5)
+        self.spin_local_timeout.setMaximum(300)
+        local_layout.addWidget(self.spin_local_timeout, 1, 1)
+        
+        self.local_group.setLayout(local_layout)
+        api_layout.addWidget(self.local_group)
+        
+        # 远程模式配置
+        self.remote_group = QtWidgets.QGroupBox("远程模式配置")
+        remote_layout = QtWidgets.QGridLayout()
+        remote_layout.addWidget(QtWidgets.QLabel("API 地址:"), 0, 0)
+        self.input_remote_url = QtWidgets.QLineEdit(self.api_config.remote_base_url)
+        self.input_remote_url.setPlaceholderText("http://127.0.0.1:8000")
+        remote_layout.addWidget(self.input_remote_url, 0, 1)
+        
+        remote_layout.addWidget(QtWidgets.QLabel("请求超时 (秒):"), 1, 0)
+        self.spin_remote_timeout = QtWidgets.QSpinBox()
+        self.spin_remote_timeout.setValue(self.api_config.remote_timeout)
+        self.spin_remote_timeout.setMinimum(10)
+        self.spin_remote_timeout.setMaximum(600)
+        remote_layout.addWidget(self.spin_remote_timeout, 1, 1)
+        
+        remote_layout.addWidget(QtWidgets.QLabel("验证 SSL:"), 2, 0)
+        self.chk_verify_ssl = QtWidgets.QCheckBox("启用 (HTTPS 生产环境推荐)")
+        self.chk_verify_ssl.setChecked(self.api_config.verify_ssl)
+        remote_layout.addWidget(self.chk_verify_ssl, 2, 1)
+        
+        self.remote_group.setLayout(remote_layout)
+        self.remote_group.setEnabled(self.api_config.is_remote_mode())
+        api_layout.addWidget(self.remote_group)
+        
+        api_group.setLayout(api_layout)
+        layout.addWidget(api_group)
+
+        # ========== 数据源配置 ==========
+        src_group = QtWidgets.QGroupBox("📡 启用的数据源")
         src_layout = QtWidgets.QVBoxLayout()
-        self.chk_gbw = QtWidgets.QCheckBox("GBW (国家标准)")
-        self.chk_by = QtWidgets.QCheckBox("BY (内部系统)")
-        self.chk_zby = QtWidgets.QCheckBox("ZBY (标准云)")
-        self.chk_gbw.setChecked(True)
-        self.chk_by.setChecked(True)
-        self.chk_zby.setChecked(True)
+        self.chk_gbw = QtWidgets.QCheckBox("✓ GBW (国家标准平台)")
+        self.chk_by = QtWidgets.QCheckBox("✓ BY (内部系统)")
+        self.chk_zby = QtWidgets.QCheckBox("✓ ZBY (标准云)")
+        self.chk_gbw.setChecked("gbw" in self.api_config.enable_sources)
+        self.chk_by.setChecked("by" in self.api_config.enable_sources)
+        self.chk_zby.setChecked("zby" in self.api_config.enable_sources)
         src_layout.addWidget(self.chk_gbw)
         src_layout.addWidget(self.chk_by)
         src_layout.addWidget(self.chk_zby)
         src_group.setLayout(src_layout)
         layout.addWidget(src_group)
 
-        # 下载配置
-        dl_group = QtWidgets.QGroupBox("下载配置")
-        dl_layout = QtWidgets.QGridLayout()
-        dl_layout.addWidget(QtWidgets.QLabel("下载目录:"), 0, 0)
-        self.input_dir = QtWidgets.QLineEdit("downloads")
-        dl_layout.addWidget(self.input_dir, 0, 1)
-        dl_layout.addWidget(QtWidgets.QLabel("搜索返回数量:"), 1, 0)
-        self.spin_pagesize = QtWidgets.QSpinBox()
-        self.spin_pagesize.setValue(30)
-        self.spin_pagesize.setMinimum(10)
-        self.spin_pagesize.setMaximum(100)
-        dl_layout.addWidget(self.spin_pagesize, 1, 1)
-        dl_group.setLayout(dl_layout)
-        layout.addWidget(dl_group)
+        # ========== 搜索和重试配置 ==========
+        search_group = QtWidgets.QGroupBox("🔍 搜索配置")
+        search_layout = QtWidgets.QGridLayout()
+        
+        search_layout.addWidget(QtWidgets.QLabel("返回结果数:"), 0, 0)
+        self.spin_search_limit = QtWidgets.QSpinBox()
+        self.spin_search_limit.setValue(self.api_config.search_limit)
+        self.spin_search_limit.setMinimum(10)
+        self.spin_search_limit.setMaximum(500)
+        search_layout.addWidget(self.spin_search_limit, 0, 1)
+        
+        search_layout.addWidget(QtWidgets.QLabel("最大重试次数:"), 1, 0)
+        self.spin_max_retries = QtWidgets.QSpinBox()
+        self.spin_max_retries.setValue(self.api_config.max_retries)
+        self.spin_max_retries.setMinimum(1)
+        self.spin_max_retries.setMaximum(10)
+        search_layout.addWidget(self.spin_max_retries, 1, 1)
+        
+        search_layout.addWidget(QtWidgets.QLabel("重试延迟 (秒):"), 2, 0)
+        self.spin_retry_delay = QtWidgets.QSpinBox()
+        self.spin_retry_delay.setValue(self.api_config.retry_delay)
+        self.spin_retry_delay.setMinimum(1)
+        self.spin_retry_delay.setMaximum(30)
+        search_layout.addWidget(self.spin_retry_delay, 2, 1)
+        
+        search_group.setLayout(search_layout)
+        layout.addWidget(search_group)
 
         layout.addStretch()
 
-        # 按钮
+        # ========== 按钮 ==========
         btn_layout = QtWidgets.QHBoxLayout()
-        btn_ok = QtWidgets.QPushButton("确定")
-        btn_cancel = QtWidgets.QPushButton("取消")
+        btn_reset = QtWidgets.QPushButton("🔄 重置默认")
+        btn_reset.clicked.connect(self.on_reset_defaults)
+        btn_ok = QtWidgets.QPushButton("✓ 保存")
+        btn_cancel = QtWidgets.QPushButton("✕ 取消")
         btn_ok.clicked.connect(self.accept)
         btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_reset)
         btn_layout.addStretch()
         btn_layout.addWidget(btn_ok)
         btn_layout.addWidget(btn_cancel)
         layout.addLayout(btn_layout)
 
         self.setLayout(layout)
+    
+    def on_mode_changed(self):
+        """切换 API 模式时更新 UI"""
+        is_local = self.rb_local.isChecked()
+        self.local_group.setEnabled(is_local)
+        self.remote_group.setEnabled(not is_local)
+    
+    def on_reset_defaults(self):
+        """重置为默认配置"""
+        reply = QtWidgets.QMessageBox.question(
+            self, "重置确认",
+            "确定要重置所有配置为默认值吗？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if reply == QtWidgets.QMessageBox.Yes:
+            from core.api_config import APIConfig, APIMode
+            default = APIConfig()
+            
+            self.rb_local.setChecked(default.is_local_mode())
+            self.rb_remote.setChecked(default.is_remote_mode())
+            self.input_local_dir.setText(default.local_output_dir)
+            self.spin_local_timeout.setValue(default.local_timeout)
+            self.input_remote_url.setText(default.remote_base_url)
+            self.spin_remote_timeout.setValue(default.remote_timeout)
+            self.chk_verify_ssl.setChecked(default.verify_ssl)
+            self.chk_gbw.setChecked("gbw" in default.enable_sources)
+            self.chk_by.setChecked("by" in default.enable_sources)
+            self.chk_zby.setChecked("zby" in default.enable_sources)
+            self.spin_search_limit.setValue(default.search_limit)
+            self.spin_max_retries.setValue(default.max_retries)
+            self.spin_retry_delay.setValue(default.retry_delay)
+            self.on_mode_changed()
+            QtWidgets.QMessageBox.information(self, "成功", "已重置为默认配置")
 
     def get_settings(self):
+        """获取用户配置并保存到 API 配置"""
+        from core.api_config import APIMode
+        
+        # 构建数据源列表
         sources = []
         if self.chk_gbw.isChecked():
-            sources.append("GBW")
+            sources.append("gbw")
         if self.chk_by.isChecked():
-            sources.append("BY")
+            sources.append("by")
         if self.chk_zby.isChecked():
-            sources.append("ZBY")
+            sources.append("zby")
+        
+        # 更新全局 API 配置
+        config = get_api_config()
+        config.mode = APIMode.LOCAL if self.rb_local.isChecked() else APIMode.REMOTE
+        config.local_output_dir = self.input_local_dir.text().strip() or "downloads"
+        config.local_timeout = self.spin_local_timeout.value()
+        config.remote_base_url = self.input_remote_url.text().strip() or "http://127.0.0.1:8000"
+        config.remote_timeout = self.spin_remote_timeout.value()
+        config.verify_ssl = self.chk_verify_ssl.isChecked()
+        config.enable_sources = sources or ["gbw", "by", "zby"]
+        config.search_limit = self.spin_search_limit.value()
+        config.max_retries = self.spin_max_retries.value()
+        config.retry_delay = self.spin_retry_delay.value()
+        
+        # 保存到文件
+        config.save()
+        
+        # 返回兼容旧代码的结果
         return {
-            "sources": sources,
-            "output_dir": self.input_dir.text(),
-            "page_size": self.spin_pagesize.value(),
+            "sources": [s.upper() for s in sources] or ["GBW", "BY", "ZBY"],
+            "output_dir": config.local_output_dir,
+            "page_size": self.spin_search_limit.value(),
         }
 
 
