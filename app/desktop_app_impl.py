@@ -1886,7 +1886,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # pending search rows (避免在搜索未完全结束前就更新显示)
         self._pending_search_rows = None
 
-        # 菜单栏已移除，功能集成到UI中
+        # Web应用线程
+        self.web_thread = None
+        self.web_server_running = False
+
+        # 创建菜单栏
+        menubar = self.menuBar()
+        
+        # 工具菜单
+        tools_menu = menubar.addMenu("🛠 工具")
+        
+        # Web应用菜单项
+        web_action = tools_menu.addAction("🌐 Web应用")
+        web_action.triggered.connect(self.open_web_app)
 
         central = QtWidgets.QWidget()
         central.setStyleSheet("background-color: #f8f9fa;")
@@ -2801,6 +2813,40 @@ class MainWindow(QtWidgets.QMainWindow):
             tb = traceback.format_exc()
             self.append_log(tb)
             QtWidgets.QMessageBox.warning(self, "提示", f"无法打开文件夹: {e}")
+
+    def open_web_app(self):
+        """启动Web应用"""
+        import webbrowser
+        
+        # 如果web服务器未启动，启动它
+        if not self.web_server_running:
+            self.web_thread = threading.Thread(target=self._run_web_server, daemon=True)
+            self.web_thread.start()
+            self.append_log("🌐 Web应用启动中... (http://localhost:5000)")
+            QtWidgets.QMessageBox.information(self, "Web应用", "Web应用已在后台启动\n访问地址: http://localhost:5000\n系统将自动打开浏览器")
+        
+        # 在浏览器中打开web应用
+        time.sleep(1)  # 给服务器启动的时间
+        try:
+            webbrowser.open("http://localhost:5000")
+            self.append_log("✅ Web应用已打开浏览器")
+        except Exception as e:
+            self.append_log(f"❌ 打开浏览器失败: {e}")
+
+    def _run_web_server(self):
+        """在后台线程中运行Flask web服务器"""
+        try:
+            from web_app.web_app import app
+            self.web_server_running = True
+            self.append_log("🚀 Web服务器启动...")
+            # 禁用Flask日志输出到控制台，避免干扰
+            import logging
+            log = logging.getLogger('werkzeug')
+            log.setLevel(logging.ERROR)
+            app.run(host='127.0.0.1', port=5000, debug=False, use_reloader=False)
+        except Exception as e:
+            self.append_log(f"❌ Web服务器启动失败: {e}")
+            self.web_server_running = False
 
     def update_path_display(self):
         """更新路径显示"""
