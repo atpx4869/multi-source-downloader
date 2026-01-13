@@ -71,48 +71,34 @@ jobs:
       shell: pwsh
     
     - name: 创建版本信息文件
+      env:
+        BUILD_DATE: ${{ steps.build_info.outputs.date }}
+        BUILD_SIZE: ${{ steps.build_info.outputs.size }}
       run: |
-        $buildDate = "${{ steps.build_info.outputs.date }}"
-        $buildSize = "${{ steps.build_info.outputs.size }}"
-        
-        $content = @"
-# MultiSourceDownloader v4.0 - Nuitka 高性能版本
-
-## 📊 构建信息
-- **构建时间**: $buildDate
-- **文件大小**: $buildSize MB
-- **编译方式**: Nuitka (原生机器码)
-- **Python 版本**: 3.11
-- **操作系统**: Windows 10+
-
-## ✨ 核心特性
-- ⚡ **启动极快**: 1-2秒启动 (比 PyInstaller 快 60-70%)
-- 🚀 **执行高效**: 原生C速度 (比解释器快 150-300%)
-- 🎨 **完整 UI**: 支持 UTF-8 和 Emoji (🔍 ✅ ❌ 🔐)
-- 📦 **体积优化**: 比 PyInstaller 小 30-40%
-- 🛡️ **安全稳定**: 真正编译,不易误报
-
-## 📥 使用说明
-1. 下载 MultiSourceDownloader.exe
-2. 双击运行（无需安装 Python）
-3. 输入6位数字密码验证
-
-## 🔧 系统要求
-- Windows 10 或更高版本
-- 64位系统
-
-## 📝 更新内容 (v4.0)
-- ✅ 使用 Nuitka 编译，性能大幅提升
-- ✅ 恢复所有 Emoji 字符显示
-- ✅ 添加 UTF-8 编码支持
-- ✅ 修复密码对话框焦点问题
-- ✅ 包含所有必需资源文件
-
-## 📞 技术支持
-遇到问题？查看项目文档或提交 Issue
-"@
-        
-        $content | Out-File -FilePath dist/VERSION_4.0.md -Encoding UTF8
+        echo "# MultiSourceDownloader v4.0 - Nuitka 高性能版本" > dist/VERSION_4.0.md
+        echo "" >> dist/VERSION_4.0.md
+        echo "## 构建信息" >> dist/VERSION_4.0.md
+        echo "- **构建时间**: $env:BUILD_DATE" >> dist/VERSION_4.0.md
+        echo "- **文件大小**: $env:BUILD_SIZE MB" >> dist/VERSION_4.0.md
+        echo "- **编译方式**: Nuitka (原生机器码)" >> dist/VERSION_4.0.md
+        echo "- **Python 版本**: 3.11" >> dist/VERSION_4.0.md
+        echo "- **操作系统**: Windows 10+" >> dist/VERSION_4.0.md
+        echo "" >> dist/VERSION_4.0.md
+        echo "## 核心特性" >> dist/VERSION_4.0.md
+        echo "- 启动极快: 1-2秒启动 (比 PyInstaller 快 60-70%)" >> dist/VERSION_4.0.md
+        echo "- 执行高效: 原生C速度 (比解释器快 150-300%)" >> dist/VERSION_4.0.md
+        echo "- 完整 UI: 支持 UTF-8 和 Emoji" >> dist/VERSION_4.0.md
+        echo "- 体积优化: 比 PyInstaller 小 30-40%" >> dist/VERSION_4.0.md
+        echo "- 安全稳定: 真正编译,不易误报" >> dist/VERSION_4.0.md
+        echo "" >> dist/VERSION_4.0.md
+        echo "## 使用说明" >> dist/VERSION_4.0.md
+        echo "1. 下载 MultiSourceDownloader.exe" >> dist/VERSION_4.0.md
+        echo "2. 双击运行（无需安装 Python）" >> dist/VERSION_4.0.md
+        echo "3. 输入6位数字密码验证" >> dist/VERSION_4.0.md
+        echo "" >> dist/VERSION_4.0.md
+        echo "## 系统要求" >> dist/VERSION_4.0.md
+        echo "- Windows 10 或更高版本" >> dist/VERSION_4.0.md
+        echo "- 64位系统" >> dist/VERSION_4.0.md
       shell: pwsh
     
     - name: 上传构建产物
