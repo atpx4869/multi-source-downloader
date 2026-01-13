@@ -72,12 +72,15 @@ jobs:
     
     - name: 创建版本信息文件
       run: |
-        @"
+        $buildDate = "${{ steps.build_info.outputs.date }}"
+        $buildSize = "${{ steps.build_info.outputs.size }}"
+        
+        $content = @"
 # MultiSourceDownloader v4.0 - Nuitka 高性能版本
 
 ## 📊 构建信息
-- **构建时间**: ${{ steps.build_info.outputs.date }}
-- **文件大小**: ${{ steps.build_info.outputs.size }} MB
+- **构建时间**: $buildDate
+- **文件大小**: $buildSize MB
 - **编译方式**: Nuitka (原生机器码)
 - **Python 版本**: 3.11
 - **操作系统**: Windows 10+
@@ -87,10 +90,10 @@ jobs:
 - 🚀 **执行高效**: 原生C速度 (比解释器快 150-300%)
 - 🎨 **完整 UI**: 支持 UTF-8 和 Emoji (🔍 ✅ ❌ 🔐)
 - 📦 **体积优化**: 比 PyInstaller 小 30-40%
-- 🛡️ **安全稳定**: 真正编译，不易误报
+- 🛡️ **安全稳定**: 真正编译,不易误报
 
 ## 📥 使用说明
-1. 下载 \`MultiSourceDownloader.exe\`
+1. 下载 MultiSourceDownloader.exe
 2. 双击运行（无需安装 Python）
 3. 输入6位数字密码验证
 
@@ -107,7 +110,9 @@ jobs:
 
 ## 📞 技术支持
 遇到问题？查看项目文档或提交 Issue
-"@ | Out-File -FilePath dist/VERSION_4.0.md -Encoding UTF8
+"@
+        
+        $content | Out-File -FilePath dist/VERSION_4.0.md -Encoding UTF8
       shell: pwsh
     
     - name: 上传构建产物
