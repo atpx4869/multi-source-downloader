@@ -219,6 +219,9 @@ class PasswordDialog(QtWidgets.QDialog):
         self.setup_ui()
         self.attempts = 0
         self.max_attempts = 5
+        # 设置对话框为模态且置顶
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.ApplicationModal)
         
     def setup_ui(self):
         self.setStyleSheet(ui_styles.DIALOG_STYLE)
@@ -330,28 +333,52 @@ class PasswordDialog(QtWidgets.QDialog):
         """)
         layout.addWidget(hint)
     
+    def showEvent(self, event):
+        """窗口显示时自动焦点到输入框"""
+        try:
+            super().showEvent(event)
+            # 延迟设置焦点，确保窗口完全显示
+            QtCore.QTimer.singleShot(100, self._set_focus)
+        except Exception as e:
+            print(f"❌ showEvent 错误: {e}")
+    
+    def _set_focus(self):
+        """设置焦点到输入框"""
+        try:
+            self.pwd_input.setFocus()
+            self.pwd_input.selectAll()
+            print("[DEBUG] 焦点已设置到输入框")
+        except Exception as e:
+            print(f"❌ 设置焦点失败: {e}")
+    
     def verify_password(self):
         """验证密码"""
-        entered = self.pwd_input.text().strip()
-        correct = get_today_password()
-        
-        if entered == correct:
-            save_auth_record()
-            self.accept()
-        else:
-            self.attempts += 1
-            remaining = self.max_attempts - self.attempts
+        try:
+            entered = self.pwd_input.text().strip()
+            correct = get_today_password()
             
-            if remaining <= 0:
-                QtWidgets.QMessageBox.critical(self, "验证失败", "密码错误次数过多，程序将退出。")
-                self.reject()
+            print(f"[DEBUG] 输入长度: {len(entered)}, 期望长度: {len(correct)}")  # 调试
+            
+            if entered == correct:
+                save_auth_record()
+                self.accept()
             else:
-                self.msg_label.setText(f"❌ 密码错误，还剩 {remaining} 次机会")
-                self.pwd_input.clear()
-                self.pwd_input.setFocus()
+                self.attempts += 1
+                remaining = self.max_attempts - self.attempts
                 
-                # 抖动效果
-                self.shake_animation()
+                if remaining <= 0:
+                    QtWidgets.QMessageBox.critical(self, "验证失败", "密码错误次数过多，程序将退出。")
+                    self.reject()
+                else:
+                    self.msg_label.setText(f"❌ 密码错误，还剩 {remaining} 次机会")
+                    self.pwd_input.clear()
+                    self.pwd_input.setFocus()
+        except Exception as e:
+            print(f"❌ 密码验证错误: {e}")
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "错误", f"验证过程出错：{str(e)}")
+            self.reject()
     
     def shake_animation(self):
         """窗口抖动效果"""
@@ -379,12 +406,28 @@ class PasswordDialog(QtWidgets.QDialog):
 
 def check_password() -> bool:
     """检查密码验证，返回是否通过"""
-    if is_authenticated_today():
-        return True
-    
-    dialog = PasswordDialog()
-    result = dialog.exec()
-    return result == QtWidgets.QDialog.Accepted
+    try:
+        print("[DEBUG] 开始密码验证...")
+        
+        if is_authenticated_today():
+            print("[DEBUG] 今日已验证过，跳过密码验证")
+            return True
+        
+        print("[DEBUG] 创建密码对话框...")
+        dialog = PasswordDialog()
+        
+        print("[DEBUG] 显示密码对话框...")
+        result = dialog.exec()
+        
+        print(f"[DEBUG] 对话框返回结果: {result}")
+        success = result == QtWidgets.QDialog.Accepted
+        print(f"[DEBUG] 密码验证{'成功' if success else '失败'}")
+        return success
+    except Exception as e:
+        print(f"❌ check_password 错误: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 # ==================== 搜索下载模块 ====================
@@ -450,7 +493,7 @@ class SearchThread(QtCore.QThread):
                             "obj": it,
                         })
                     
-                    self.log.emit(f"   ✓ {source_name} 完成：{len(rows)} 条")
+                    self.log.emit(f"   ✅ {source_name} 完成: {len(rows)} 条")
                     return source_name, rows
                     
                 except Exception as e:
@@ -481,7 +524,7 @@ class SearchThread(QtCore.QThread):
                         self.log.emit(f"❌ 处理搜索结果时出错: {e}")
             
             self.progress.emit(100, 100, "所有数据源搜索完成")
-            self.log.emit(f"✅ 搜索完成：共查询 {total_sources} 个数据源")
+            self.log.emit(f"✅ 搜索完成: 共查询 {total_sources} 个数据源")
             self.all_completed.emit()
             
         except Exception as e:
@@ -541,12 +584,12 @@ class BackgroundSearchThread(QtCore.QThread):
                         s_name = it.sources[0] if it.sources else src_name
                         cache[key][s_name] = it
                     
-                    self.log.emit(f"   ✓ {src_name} 完成: {len(items)} 条")
+                    self.log.emit(f"   ✅ {src_name} 完成: {len(items)} 条")
                 except Exception as e:
                     self.log.emit(f"   ✗ {src_name} 失败: {str(e)[:50]}")
 
             self.progress.emit("后台加载完成")
-            self.log.emit(f"✅ 后台搜索完成，共缓存 {len(cache)} 条补充数据")
+            self.log.emit(f"✅ 后台搜索完成: 共缓存 {len(cache)} 条补充数据")
             
         except Exception as e:
             tb = traceback.format_exc()
@@ -753,7 +796,7 @@ class DownloadWorker(threading.Thread):
         try:
             client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir=self.output_dir)
         except Exception as e:
-            self._emit_log(f"❌ [Worker-{self.worker_id}] 获取下载器失败: {str(e)[:60]}")
+            self._emit_log(f"[ERROR] [Worker-{self.worker_id}] 获取下载器失败: {str(e)[:60]}")
             self.fail_count += 1
             return
         
@@ -764,7 +807,7 @@ class DownloadWorker(threading.Thread):
                 
                 if path:
                     # 成功下载
-                    is_cached = "✅ 缓存命中" in " ".join(logs or [])
+                    is_cached = "[OK] 缓存命中" in " ".join(logs or [])
                     success_src = "缓存"
                     
                     if not is_cached:
@@ -777,7 +820,7 @@ class DownloadWorker(threading.Thread):
                     if is_cached:
                         self._emit_log(f"   💾 [Worker-{self.worker_id}] 缓存命中 -> {path}")
                     else:
-                        self._emit_log(f"   ✅ [Worker-{self.worker_id}] 下载成功 [{success_src}]")
+                        self._emit_log(f"   [OK] [Worker-{self.worker_id}] 下载成功 [{success_src}]")
                     
                     self.success_count += 1
                     download_success = True
@@ -3512,9 +3555,9 @@ class MainWindow(QtWidgets.QMainWindow):
 def main():
     app = QtWidgets.QApplication(sys.argv)
     
-    # 密码验证
+    # 密码验证（必须在 QApplication 创建后执行）
     if not check_password():
-        sys.exit(0)
+        return 0
     
     # 提前预热 OCR 模型和下载器，避免第一次下载时卡顿
     def prewarm_all():
@@ -3544,8 +3587,8 @@ def main():
     
     win = MainWindow()
     win.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

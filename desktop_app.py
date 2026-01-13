@@ -8,7 +8,14 @@
 from __future__ import annotations
 
 import sys
+import io
 from pathlib import Path
+
+# 设置 UTF-8 编码以支持 emoji 和其他 Unicode 字符
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 
 def _bootstrap_sys_path():
