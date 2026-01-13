@@ -11,7 +11,8 @@ env:
   VERSION: "4.0.0"
 
 jobs:
-  build-nuitka:
+  build-nuitka-win10:
+    name: "构建 Win10+ 版本 (Python 3.11 + Nuitka)"
     runs-on: windows-latest
     
     steps:
@@ -127,5 +128,127 @@ jobs:
         Write-Host "   2. 点击最新的 workflow run" -ForegroundColor White
         Write-Host "   3. 在 Artifacts 区域下载压缩包" -ForegroundColor White
         Write-Host "   4. 解压即可使用" -ForegroundColor White
+        Write-Host ""
+      shell: pwsh
+
+  build-nuitka-win7:
+    name: "构建 Win7 兼容版本 (Python 3.8 + Nuitka)"
+    runs-on: windows-2019
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 设置 Python 3.8
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.8'
+        cache: 'pip'
+    
+    - name: 安装依赖 (Win7 兼容版本)
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements_win7.txt
+        pip install nuitka ordered-set zstandard
+      shell: pwsh
+    
+    - name: 创建必要的文件
+      run: |
+        if (-not (Test-Path "app/.auth_cache")) {
+          New-Item -Path "app/.auth_cache" -ItemType File -Force | Out-Null
+          Write-Host "✅ 创建 .auth_cache"
+        }
+      shell: pwsh
+    
+    - name: 转换图标
+      run: |
+        python -c "from PIL import Image; img = Image.open('core/logo.png'); img.save('app.ico', format='ICO', sizes=[(256,256)]); print('✅ 图标转换成功')"
+      shell: pwsh
+    
+    - name: 使用 Nuitka 编译 (Win7 兼容版本)
+      run: |
+        Write-Host "🚀 开始 Nuitka 编译 (Win7 兼容)..." -ForegroundColor Cyan
+        python -m nuitka --onefile --standalone `
+          --windows-console-mode=disable `
+          --enable-plugin=pyside2 `
+          --windows-icon-from-ico=app.ico `
+          --include-data-file=core/logo.png=core/logo.png `
+          --include-data-file=app/.auth_cache=app/.auth_cache `
+          --output-dir=dist `
+          --output-filename=MultiSourceDownloader-Win7.exe `
+          desktop_app.py
+        Write-Host "✅ Nuitka 编译完成！" -ForegroundColor Green
+      shell: pwsh
+    
+    - name: 获取构建信息
+      id: build_info_win7
+      run: |
+        $date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $exe = Get-Item dist/MultiSourceDownloader-Win7.exe
+        $sizeMB = [math]::Round($exe.Length / 1MB, 2)
+        echo "date=$date" >> $env:GITHUB_OUTPUT
+        echo "size=$sizeMB" >> $env:GITHUB_OUTPUT
+        Write-Host "📦 文件大小: $sizeMB MB" -ForegroundColor Cyan
+      shell: pwsh
+    
+    - name: 创建版本信息文件
+      env:
+        BUILD_DATE: ${{ steps.build_info_win7.outputs.date }}
+        BUILD_SIZE: ${{ steps.build_info_win7.outputs.size }}
+      run: |
+        echo "# MultiSourceDownloader v4.0 - Win7 兼容版本" > dist/VERSION_4.0_Win7.md
+        echo "" >> dist/VERSION_4.0_Win7.md
+        echo "## 构建信息" >> dist/VERSION_4.0_Win7.md
+        echo "- **构建时间**: $env:BUILD_DATE" >> dist/VERSION_4.0_Win7.md
+        echo "- **文件大小**: $env:BUILD_SIZE MB" >> dist/VERSION_4.0_Win7.md
+        echo "- **编译方式**: Nuitka (原生机器码)" >> dist/VERSION_4.0_Win7.md
+        echo "- **Python 版本**: 3.8" >> dist/VERSION_4.0_Win7.md
+        echo "- **UI 框架**: PySide2" >> dist/VERSION_4.0_Win7.md
+        echo "- **操作系统**: Windows 7+" >> dist/VERSION_4.0_Win7.md
+        echo "" >> dist/VERSION_4.0_Win7.md
+        echo "## 核心特性" >> dist/VERSION_4.0_Win7.md
+        echo "- 启动极快: 1-2秒启动" >> dist/VERSION_4.0_Win7.md
+        echo "- 执行高效: 原生C速度" >> dist/VERSION_4.0_Win7.md
+        echo "- 完整 UI: 支持 UTF-8 和 Emoji" >> dist/VERSION_4.0_Win7.md
+        echo "- 兼容性强: 支持 Windows 7/8/10/11" >> dist/VERSION_4.0_Win7.md
+        echo "- 安全稳定: 真正编译,不易误报" >> dist/VERSION_4.0_Win7.md
+        echo "" >> dist/VERSION_4.0_Win7.md
+        echo "## 使用说明" >> dist/VERSION_4.0_Win7.md
+        echo "1. 下载 MultiSourceDownloader-Win7.exe" >> dist/VERSION_4.0_Win7.md
+        echo "2. 双击运行（无需安装 Python）" >> dist/VERSION_4.0_Win7.md
+        echo "3. 输入6位数字密码验证" >> dist/VERSION_4.0_Win7.md
+        echo "" >> dist/VERSION_4.0_Win7.md
+        echo "## 系统要求" >> dist/VERSION_4.0_Win7.md
+        echo "- Windows 7 SP1 或更高版本" >> dist/VERSION_4.0_Win7.md
+        echo "- 64位系统" >> dist/VERSION_4.0_Win7.md
+        echo "- 需要安装 KB2999226 更新 (Win7/8)" >> dist/VERSION_4.0_Win7.md
+      shell: pwsh
+    
+    - name: 上传构建产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: MultiSourceDownloader-v4.0-Win7-Nuitka
+        path: |
+          dist/MultiSourceDownloader-Win7.exe
+          dist/VERSION_4.0_Win7.md
+        retention-days: 90
+    
+    - name: 显示构建完成信息
+      run: |
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host "✅ Win7 兼容版本构建完成！" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "📦 产物信息:" -ForegroundColor Cyan
+        Write-Host "   文件名: MultiSourceDownloader-Win7.exe" -ForegroundColor White
+        Write-Host "   大小: ${{ steps.build_info_win7.outputs.size }} MB" -ForegroundColor White
+        Write-Host "   时间: ${{ steps.build_info_win7.outputs.date }}" -ForegroundColor White
+        Write-Host ""
+        Write-Host "📥 下载方式:" -ForegroundColor Yellow
+        Write-Host "   1. 进入仓库的 Actions 页面" -ForegroundColor White
+        Write-Host "   2. 点击最新的 workflow run" -ForegroundColor White
+        Write-Host "   3. 在 Artifacts 区域下载 Win7 版本压缩包" -ForegroundColor White
+        Write-Host "   4. 解压即可在 Win7+ 系统使用" -ForegroundColor White
         Write-Host ""
       shell: pwsh
