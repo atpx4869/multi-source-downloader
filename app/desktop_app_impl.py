@@ -1982,8 +1982,8 @@ class MainWindow(QtWidgets.QMainWindow):
         path_op_layout.addWidget(lbl_path)
         path_op_layout.addWidget(self.lbl_download_path, 1)
         
-        # Web应用按钮
-        self.btn_web_app = QtWidgets.QPushButton("🌐 Web应用")
+        # Web应用按钮 - 改为 Excel 补全
+        self.btn_web_app = QtWidgets.QPushButton("📊 Excel补全")
         self.btn_web_app.setMaximumWidth(70)
         self.btn_web_app.setStyleSheet("""
             QPushButton {
@@ -2002,7 +2002,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 background-color: #1e8449;
             }
         """)
-        self.btn_web_app.clicked.connect(self.open_web_app)
+        self.btn_web_app.clicked.connect(self.open_excel_dialog)
         path_op_layout.addWidget(self.btn_web_app)
         
         # 路径选择按钮 - 宽度调小防止遮挡
@@ -2874,29 +2874,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_log(tb)
             QtWidgets.QMessageBox.warning(self, "提示", f"无法打开文件夹: {e}")
 
-    def open_web_app(self):
-        """启动Web应用"""
-        import webbrowser
+    def open_excel_dialog(self):
+        """打开 Excel 补全对话框"""
+        from app.excel_dialog import ExcelDialog
         
-        # 如果web服务器未启动，启动它
-        if not self.web_server_running:
-            self.web_server_event.clear()
-            self.web_thread = threading.Thread(target=self._run_web_server, daemon=True)
-            self.web_thread.start()
-            self.append_log("🌐 Web应用启动中... (http://localhost:5000)")
-            
-            # 等待服务器启动完成（超时10秒）
-            if self.web_server_event.wait(timeout=10):
-                # 服务器启动成功
-                QtWidgets.QMessageBox.information(self, "Web应用", "Web应用已启动\n访问地址: http://localhost:5000")
-                try:
-                    webbrowser.open("http://localhost:5000")
-                    self.append_log("✅ Web应用已打开浏览器")
-                except Exception as e:
-                    self.append_log(f"⚠️ 打开浏览器失败，请手动访问 http://localhost:5000: {e}")
-            else:
-                # 服务器启动失败
-                QtWidgets.QMessageBox.warning(self, "Web应用", "Web应用启动失败，请查看日志")
+        dialog = ExcelDialog(self)
+        dialog.exec()
         else:
             # 服务器已在运行
             try:
