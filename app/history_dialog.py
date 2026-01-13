@@ -210,6 +210,7 @@ class HistoryDialog(QtWidgets.QDialog):
         # 操作区
         actions_group = QtWidgets.QGroupBox("🛠 缓存操作")
         actions_layout = QtWidgets.QVBoxLayout()
+        actions_layout.setSpacing(10)
         
         # 清空搜索缓存
         clear_search_cache_btn = QtWidgets.QPushButton("🗑 清空搜索缓存（保留近7天）")
