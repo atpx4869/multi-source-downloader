@@ -65,6 +65,7 @@ import pandas as pd
 
 # 导入 API 配置
 from core.api_config import get_api_config
+from core.cache_manager import get_cache_manager
 
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
@@ -698,6 +699,7 @@ class DownloadWorker(threading.Thread):
         self.download_count = 0
         self.success_count = 0
         self.fail_count = 0
+        self.cache_manager = get_cache_manager()
 
     def _emit_log(self, msg: str):
         """发送日志信号"""
@@ -821,7 +823,19 @@ class DownloadWorker(threading.Thread):
                         self._emit_log(f"   💾 [Worker-{self.worker_id}] 缓存命中 -> {path}")
                     else:
                         self._emit_log(f"   [OK] [Worker-{self.worker_id}] 下载成功 [{success_src}]")
-                    
+                        # 写入下载历史
+                        try:
+                            size_bytes = os.path.getsize(path) if os.path.exists(path) else 0
+                            self.cache_manager.save_download_record(
+                                std_no=getattr(best_match, "std_no", ""),
+                                std_name=getattr(best_match, "name", getattr(best_match, "std_name", "")) or "",
+                                source=success_src,
+                                file_path=path,
+                                file_size=size_bytes
+                            )
+                        except Exception as e:
+                            self._emit_log(f"      ⚠️  记录下载历史失败: {str(e)[:60]}")
+
                     self.success_count += 1
                     download_success = True
                     return
@@ -970,7 +984,7 @@ class BatchDownloadThread(QtCore.QThread):
         
         # ─────────────── 流水线：放入搜索任务并实时收集+下载 ───────────────
         self.log.emit("🚀 [方案1+3] 启动流水线：边搜边下，智能重试")
-        self.log.emit(f"   🔍 搜索工人数: 3   ⬇️  下载工人数: {self.num_workers}")
+        self.log.emit(f"   🔍 搜索线程数: 3   ⬇️  下载线程数: {self.num_workers}")
         
         search_count = 0
         search_fail = 0
@@ -1072,7 +1086,7 @@ class BatchDownloadThread(QtCore.QThread):
         # ─────────────── 等待下载完成 ───────────────
         self.log.emit(f"──────────────────────────────────────")
         self.log.emit(f"🔍 搜索阶段完成！共找到 {search_count} 个标准")
-        self.log.emit(f"⏳ 正在下载 {search_count} 个文件（{self.num_workers} 工人并发）...")
+        self.log.emit(f"⏳ 正在下载 {search_count} 个文件（{self.num_workers} 线程并发）...")
         
         # 通知下载worker停止
         for _ in range(self.num_workers):
@@ -1394,6 +1408,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setWindowTitle("⚙️ 设置")
         self.setModal(True)
         self.resize(700, 600)
+        self.setStyleSheet(ui_styles.DIALOG_STYLE + ui_styles.SCROLLBAR_STYLE)
         
         self.api_config = get_api_config()
 
@@ -1431,50 +1446,20 @@ class SettingsDialog(QtWidgets.QDialog):
         
         btn_reset = QtWidgets.QPushButton("🔄 重置默认")
         btn_reset.setMinimumWidth(100)
-        btn_reset.setStyleSheet("""
-            QPushButton {
-                background-color: #95a5a6;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #7f8c8d; }
-            QPushButton:pressed { background-color: #34495e; }
-        """)
+        btn_reset.setStyleSheet(ui_styles.BTN_SECONDARY_STYLE)
+        btn_reset.setCursor(QtCore.Qt.PointingHandCursor)
         btn_reset.clicked.connect(self.on_reset_defaults)
         
         btn_ok = QtWidgets.QPushButton("✓ 保存")
         btn_ok.setMinimumWidth(100)
-        btn_ok.setStyleSheet("""
-            QPushButton {
-                background-color: #2ecc71;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #27ae60; }
-            QPushButton:pressed { background-color: #229954; }
-        """)
+        btn_ok.setStyleSheet(ui_styles.BTN_PRIMARY_STYLE)
+        btn_ok.setCursor(QtCore.Qt.PointingHandCursor)
         btn_ok.clicked.connect(self.accept)
         
         btn_cancel = QtWidgets.QPushButton("✕ 取消")
         btn_cancel.setMinimumWidth(100)
-        btn_cancel.setStyleSheet("""
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #c0392b; }
-            QPushButton:pressed { background-color: #a93226; }
-        """)
+        btn_cancel.setStyleSheet(ui_styles.BTN_SECONDARY_STYLE)
+        btn_cancel.setCursor(QtCore.Qt.PointingHandCursor)
         btn_cancel.clicked.connect(self.reject)
         
         btn_layout.addWidget(btn_reset)
@@ -1521,14 +1506,10 @@ class SettingsDialog(QtWidgets.QDialog):
     def _create_api_section(self) -> QtWidgets.QGroupBox:
         """API模式配置段"""
         group = QtWidgets.QGroupBox()
-        group.setStyleSheet("""
-            QGroupBox {
-                background-color: #f8f9fa;
-                border: 1px solid #e0e0e0;
-                border-radius: 6px;
-                padding: 15px;
-                margin: 0px;
-            }
+        group.setStyleSheet(ui_styles.BUTTON_GROUP_STYLE + """
+            QGroupBox { background-color: #f8f9fa; }
+            QLabel { color: #333333; }
+            QRadioButton { color: #333333; }
         """)
         layout = QtWidgets.QVBoxLayout(group)
         layout.setSpacing(12)
@@ -1597,14 +1578,10 @@ class SettingsDialog(QtWidgets.QDialog):
     def _create_sources_section(self) -> QtWidgets.QGroupBox:
         """数据源配置段"""
         group = QtWidgets.QGroupBox()
-        group.setStyleSheet("""
-            QGroupBox {
-                background-color: #f8f9fa;
-                border: 1px solid #e0e0e0;
-                border-radius: 6px;
-                padding: 15px;
-                margin: 0px;
-            }
+        group.setStyleSheet(ui_styles.BUTTON_GROUP_STYLE + """
+            QGroupBox { background-color: #f8f9fa; }
+            QLabel { color: #333333; }
+            QCheckBox { color: #333333; }
         """)
         layout = QtWidgets.QVBoxLayout(group)
         layout.setSpacing(10)
@@ -1628,14 +1605,10 @@ class SettingsDialog(QtWidgets.QDialog):
     def _create_search_section(self) -> QtWidgets.QGroupBox:
         """搜索配置段"""
         group = QtWidgets.QGroupBox()
-        group.setStyleSheet("""
-            QGroupBox {
-                background-color: #f8f9fa;
-                border: 1px solid #e0e0e0;
-                border-radius: 6px;
-                padding: 15px;
-                margin: 0px;
-            }
+        group.setStyleSheet(ui_styles.BUTTON_GROUP_STYLE + """
+            QGroupBox { background-color: #f8f9fa; }
+            QLabel { color: #333333; }
+            QCheckBox { color: #333333; }
         """)
         layout = QtWidgets.QVBoxLayout(group)
         layout.setSpacing(10)
@@ -1669,14 +1642,10 @@ class SettingsDialog(QtWidgets.QDialog):
     def _create_performance_section(self) -> QtWidgets.QGroupBox:
         """性能优化段"""
         group = QtWidgets.QGroupBox()
-        group.setStyleSheet("""
-            QGroupBox {
-                background-color: #f8f9fa;
-                border: 1px solid #e0e0e0;
-                border-radius: 6px;
-                padding: 15px;
-                margin: 0px;
-            }
+        group.setStyleSheet(ui_styles.BUTTON_GROUP_STYLE + """
+            QGroupBox { background-color: #f8f9fa; }
+            QLabel { color: #333333; }
+            QCheckBox { color: #333333; }
         """)
         layout = QtWidgets.QVBoxLayout(group)
         layout.setSpacing(10)
@@ -1919,6 +1888,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "output_dir": "downloads",
             "page_size": 30,  # 默认每页30条
         }
+
+        # 缓存与历史管理器（用于搜索/下载历史记录）
+        self.cache_manager = get_cache_manager()
 
         # 持久化配置（Win7 兼容）：使用 QSettings（Windows 下为注册表；无需额外文件权限）
         self._load_persistent_settings()
@@ -3191,11 +3163,61 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage(f"搜索完成，共找到 {len(self.all_items)} 条结果", 5000)
         self.append_log(f"✅ 所有数据源搜索完成，共 {len(self.all_items)} 条结果")
 
+        # 缓存搜索结果并记录历史
+        try:
+            serialized = self._serialize_search_results_for_cache()
+            self.cache_manager.save_search_cache(
+                keyword=self.last_keyword,
+                sources=self.settings.get("sources", []),
+                page=1,
+                results=serialized
+            )
+        except Exception as e:
+            self.append_log(f"⚠️  缓存搜索结果失败: {str(e)[:80]}")
+            try:
+                self.cache_manager.db.add_search_history(
+                    keyword=self.last_keyword,
+                    sources=self.settings.get("sources", []),
+                    result_count=len(self.all_items)
+                )
+            except Exception:
+                pass
+
     
     def on_search_finished(self):
         """搜索线程结束（兼容旧版，已被 on_all_search_completed 替代）"""
         # 保留此方法以防万一，但主要逻辑已移到 on_all_search_completed
         pass
+
+    def _serialize_search_results_for_cache(self) -> List[dict]:
+        """将当前搜索结果转换为可缓存的纯数据结构"""
+        serialized = []
+        for item in self.all_items or []:
+            obj = item.get("obj")
+            sources = []
+            try:
+                if obj and getattr(obj, "sources", None):
+                    sources = list(obj.sources)
+            except Exception:
+                sources = []
+
+            if not sources:
+                if isinstance(item.get("sources"), list):
+                    sources = item.get("sources")
+                elif isinstance(item.get("sources"), str):
+                    sources = [item.get("sources")]
+
+            serialized.append({
+                "std_no": item.get("std_no", ""),
+                "name": item.get("name", ""),
+                "publish": item.get("publish", ""),
+                "implement": item.get("implement", ""),
+                "status": item.get("status", ""),
+                "has_pdf": bool(item.get("has_pdf")),
+                "sources": sources,
+                "_display_source": item.get("_display_source", ""),
+            })
+        return serialized
 
     def on_bg_search_finished_legacy(self, cache: dict):
         """后台搜索完成（已废弃，保留以防兼容性问题）"""
@@ -3608,8 +3630,18 @@ class MainWindow(QtWidgets.QMainWindow):
             msg += "\n\n失败清单:\n" + "\n".join(failed_list[:15])
             if len(failed_list) > 15:
                 msg += f"\n... 等共 {len(failed_list)} 项"
-        
-        QtWidgets.QMessageBox.information(self, "任务完成", msg)
+
+        info_box = QtWidgets.QMessageBox(self)
+        info_box.setWindowTitle("任务完成")
+        info_box.setText(msg)
+        info_box.setIcon(QtWidgets.QMessageBox.Information)
+        info_box.setStyleSheet("""
+            QMessageBox { background-color: #f5f5f5; }
+            QLabel { color: #333333; font-size: 12px; }
+            QPushButton { background-color: #eeeeee; color: #333333; border: 1px solid #dddddd; border-radius: 4px; padding: 6px 14px; }
+            QPushButton:hover { background-color: #e0e0e0; }
+        """)
+        info_box.exec()
 
 
 def main():

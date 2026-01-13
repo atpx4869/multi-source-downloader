@@ -44,6 +44,7 @@ class HistoryDialog(QtWidgets.QDialog):
         
         # 标签页
         self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.setStyleSheet(ui_styles.TAB_STYLE)
         self.tab_widget.addTab(self.create_search_history_tab(), "🔍 搜索历史")
         self.tab_widget.addTab(self.create_download_history_tab(), "📥 下载历史")
         self.tab_widget.addTab(self.create_cache_management_tab(), "💾 缓存管理")
@@ -190,6 +191,15 @@ class HistoryDialog(QtWidgets.QDialog):
         
         # 缓存统计
         stats_group = QtWidgets.QGroupBox("📊 缓存统计")
+        stats_group.setStyleSheet("""
+            QGroupBox {
+                color: #333333;
+                font-weight: bold;
+            }
+            QLabel {
+                color: #333333;
+            }
+        """)
         stats_layout = QtWidgets.QFormLayout()
         
         self.cache_total_label = QtWidgets.QLabel("--")
@@ -209,6 +219,15 @@ class HistoryDialog(QtWidgets.QDialog):
         
         # 操作区
         actions_group = QtWidgets.QGroupBox("🛠 缓存操作")
+        actions_group.setStyleSheet("""
+            QGroupBox {
+                color: #333333;
+                font-weight: bold;
+            }
+            QLabel {
+                color: #333333;
+            }
+        """)
         actions_layout = QtWidgets.QVBoxLayout()
         actions_layout.setSpacing(10)
         
@@ -320,22 +339,87 @@ class HistoryDialog(QtWidgets.QDialog):
         """双击搜索历史项"""
         row = index.row()
         keyword = self.search_history_table.item(row, 0).text()
-        # 统计信息
-        total = len(history)
-        total_size = sum(record['file_size'] or 0 for record in history)
-        size_str = self.format_file_size(total_size)
-        existing_files = sum(1 for r in history if r['file_path'] and Path(r['file_path']).exists())
-        
-        self.download_stats_label.setText(
-            f"📊 总计: {total} 条记录  |  💾 总大小: {size_str}  |  ✅ 文件存在: {existing_files} 个"
-        )
-        
-        
-        # 显示提示
-        QtWidgets.QMessageBox.information(
-            self, "搜索历史",
-            f"关键词: {keyword}\n\n您可以在主界面重新搜索此关键词"
-        )
+        sources_text = self.search_history_table.item(row, 1).text() if self.search_history_table.item(row, 1) else ""
+        sources = [s.strip() for s in (sources_text or "").split(',') if s.strip()]
+        if not sources:
+            sources = ["GBW", "BY", "ZBY"]
+
+        try:
+            cached = self.cache_manager.get_search_cache(keyword, sources, page=1)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "搜索历史", f"读取缓存失败: {e}")
+            return
+
+        if cached:
+            self.show_cached_results_dialog(keyword, cached)
+        else:
+            QtWidgets.QMessageBox.information(
+                self, "搜索历史",
+                f"关键词: {keyword}\n未找到缓存结果，可在主界面重新搜索。"
+            )
+
+    def show_cached_results_dialog(self, keyword: str, results: list):
+        """展示缓存的搜索结果"""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"缓存结果 - {keyword}")
+        dialog.setMinimumSize(760, 420)
+        dialog.setStyleSheet(ui_styles.DIALOG_STYLE)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(10)
+
+        info_label = QtWidgets.QLabel(f"关键词: {keyword}  |  缓存结果 {len(results)} 条（展示前100条）")
+        info_label.setStyleSheet("font-weight: bold; color: #333;")
+        layout.addWidget(info_label)
+
+        table = QtWidgets.QTableWidget()
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["标准号", "标准名称", "来源", "状态", "PDF"])
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+
+        max_rows = min(len(results), 100)
+        table.setRowCount(max_rows)
+
+        for i in range(max_rows):
+            record = results[i] or {}
+            table.setItem(i, 0, QtWidgets.QTableWidgetItem(record.get("std_no", "")))
+            name_item = QtWidgets.QTableWidgetItem(record.get("name", ""))
+            name_item.setToolTip(record.get("name", ""))
+            table.setItem(i, 1, name_item)
+
+            display_source = record.get("_display_source") or ""
+            if not display_source:
+                srcs = record.get("sources") or []
+                if isinstance(srcs, str):
+                    display_source = srcs
+                elif srcs:
+                    display_source = srcs[0]
+            table.setItem(i, 2, QtWidgets.QTableWidgetItem(display_source))
+
+            table.setItem(i, 3, QtWidgets.QTableWidgetItem(record.get("status", "")))
+
+            pdf_flag = "✓" if record.get("has_pdf") else "-"
+            pdf_item = QtWidgets.QTableWidgetItem(pdf_flag)
+            pdf_item.setTextAlignment(QtCore.Qt.AlignCenter)
+            table.setItem(i, 4, pdf_item)
+
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+
+        btn_layout = QtWidgets.QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QtWidgets.QPushButton("关闭")
+        close_btn.setFixedWidth(100)
+        close_btn.setStyleSheet(ui_styles.BTN_SECONDARY_STYLE)
+        close_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+
+        dialog.exec()
     
     def load_download_history(self):
         """加载下载历史"""
