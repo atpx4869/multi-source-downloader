@@ -5,9 +5,8 @@ Excel 标准号处理对话框
 """
 import sys
 import threading
-import queue
 from pathlib import Path
-from typing import Optional, List
+from datetime import datetime
 import pandas as pd
 
 project_root = Path(__file__).parent.parent
@@ -17,86 +16,10 @@ from web_app.excel_standard_processor import StandardProcessor
 
 try:
     from PySide6 import QtCore, QtWidgets, QtGui
+    PYSIDE_VER = 6
 except ImportError:
     from PySide2 import QtCore, QtWidgets, QtGui
-
-
-class WorkerThread(QtCore.QThread):
-    """后台处理线程"""
-    
-    # 信号定义
-    progress_updated = QtCore.Signal(int, int)  # (current, total)
-    result_ready = QtCore.Signal(pd.DataFrame)
-    error_occurred = QtCore.Signal(str)
-    status_changed = QtCore.Signal(str)
-    
-    def __init__(self, processor: StandardProcessor, excel_file: str):
-        super().__init__()
-        self.processor = processor
-        self.excel_file = excel_file
-        self.result_df = None
-    
-    def run(self):
-        """在后台线程中执行处理"""
-        try:
-            self.status_changed.emit("正在读取 Excel 文件...")
-            
-            # 读取 Excel
-            df = pd.read_excel(self.excel_file)
-            if df.empty:
-                self.error_occurred.emit("Excel 文件为空")
-                return
-            
-            # 获取标准号列（第一列或名为 '标准号' 的列）
-            std_col = None
-            for col in df.columns:
-                if '标准' in col or '号' in col:
-                    std_col = col
-                    break
-            if std_col is None:
-                std_col = df.columns[0]
-            
-            self.status_changed.emit(f"开始处理 {len(df)} 行标准号...")
-            
-            # 处理每一行
-            results = []
-            for idx, row in df.iterrows():
-                std_no = str(row[std_col]).strip()
-                if not std_no or std_no.lower() == 'nan':
-                    results.append({
-                        '原始标准号': std_no,
-                        '补全标准号': '',
-                        '标准名称': '',
-                        '状态': '空值'
-                    })
-                else:
-                    # 处理标准号
-                    full_std_no, name, status = self.processor.process_standard(std_no)
-                    results.append({
-                        '原始标准号': std_no,
-                        '补全标准号': full_std_no,
-                        '标准名称': name,
-                        '状态': status
-                    })
-                
-                # 更新进度
-                self.progress_updated.emit(idx + 1, len(df))
-            
-            # 创建结果 DataFrame
-            self.result_df = pd.DataFrame(results)
-            self.result_ready.emit(self.result_df)
-            self.status_changed.emit(f"处理完成！共处理 {len(df)} 行")
-            
-        except Exception as e:
-            self.error_occurred.emit(f"处理失败: {str(e)}")
-
-
-class ExcelDialogSignals(QtCore.QObject):
-    """信号代理（兼容 PySide2）"""
-    progress_updated = QtCore.Signal(int, int)
-    result_ready = QtCore.Signal(object)
-    error_occurred = QtCore.Signal(str)
-    status_changed = QtCore.Signal(str)
+    PYSIDE_VER = 2
 
 
 class ExcelDialog(QtWidgets.QDialog):
@@ -105,46 +28,70 @@ class ExcelDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Excel 标准号补全处理")
-        self.setGeometry(100, 100, 1000, 600)
+        self.setGeometry(100, 100, 1000, 700)
+        self.setModal(True)
         
         self.processor = StandardProcessor()
-        self.worker_thread = None
-        self.signals = ExcelDialogSignals()
         self.result_df = None
-        
-        # 连接信号
-        self.signals.progress_updated.connect(self.on_progress_updated)
-        self.signals.result_ready.connect(self.on_result_ready)
-        self.signals.error_occurred.connect(self.on_error)
-        self.signals.status_changed.connect(self.on_status_changed)
+        self.excel_file = None
+        self.processing = False
         
         self.init_ui()
     
     def init_ui(self):
         """初始化 UI"""
-        layout = QtWidgets.QVBoxLayout()
+        main_layout = QtWidgets.QVBoxLayout()
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
-        # ========== 顶部：文件选择区 ==========
-        top_layout = QtWidgets.QHBoxLayout()
+        # ========== 1. 文件选择区 ==========
+        file_group = QtWidgets.QGroupBox("1. 选择文件")
+        file_layout = QtWidgets.QHBoxLayout()
         
         self.label_file = QtWidgets.QLabel("未选择文件")
-        self.label_file.setStyleSheet("color: #666; font-size: 12px;")
+        self.label_file.setStyleSheet("color: #666; padding: 5px;")
         
         self.btn_select = QtWidgets.QPushButton("选择 Excel 文件")
-        self.btn_select.clicked.connect(self.select_file)
         self.btn_select.setMaximumWidth(120)
+        self.btn_select.clicked.connect(self.select_file)
+        self.btn_select.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:pressed {
+                background-color: #1565C0;
+            }
+        """)
+        
+        file_layout.addWidget(QtWidgets.QLabel("文件："))
+        file_layout.addWidget(self.label_file, 1)
+        file_layout.addWidget(self.btn_select)
+        file_group.setLayout(file_layout)
+        main_layout.addWidget(file_group)
+        
+        # ========== 2. 处理区 ==========
+        process_group = QtWidgets.QGroupBox("2. 开始处理")
+        process_layout = QtWidgets.QHBoxLayout()
         
         self.btn_process = QtWidgets.QPushButton("开始处理")
-        self.btn_process.clicked.connect(self.process_file)
         self.btn_process.setMaximumWidth(100)
         self.btn_process.setEnabled(False)
+        self.btn_process.clicked.connect(self.process_file)
         self.btn_process.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
                 border: none;
                 border-radius: 4px;
-                padding: 5px;
+                padding: 6px 12px;
                 font-weight: bold;
             }
             QPushButton:hover {
@@ -159,41 +106,25 @@ class ExcelDialog(QtWidgets.QDialog):
             }
         """)
         
-        top_layout.addWidget(QtWidgets.QLabel("文件："))
-        top_layout.addWidget(self.label_file, 1)
-        top_layout.addWidget(self.btn_select)
-        top_layout.addWidget(self.btn_process)
-        
-        layout.addLayout(top_layout)
-        layout.addSpacing(10)
-        
-        # ========== 中部：进度条 ==========
-        progress_layout = QtWidgets.QHBoxLayout()
+        # 进度显示
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setVisible(False)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                text-align: center;
-                height: 20px;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-            }
-        """)
+        self.progress_bar.setMaximumHeight(25)
         
         self.label_progress = QtWidgets.QLabel("")
         self.label_progress.setVisible(False)
-        self.label_progress.setStyleSheet("color: #666; font-size: 12px;")
+        self.label_progress.setStyleSheet("color: #666; font-size: 11px; min-width: 50px;")
         
-        progress_layout.addWidget(self.progress_bar, 1)
-        progress_layout.addWidget(self.label_progress)
+        process_layout.addWidget(self.btn_process)
+        process_layout.addWidget(self.progress_bar, 1)
+        process_layout.addWidget(self.label_progress)
+        process_group.setLayout(process_layout)
+        main_layout.addWidget(process_group)
         
-        layout.addLayout(progress_layout)
-        layout.addSpacing(10)
+        # ========== 3. 结果表格 ==========
+        table_group = QtWidgets.QGroupBox("3. 处理结果")
+        table_layout = QtWidgets.QVBoxLayout()
         
-        # ========== 中部：结果表格 ==========
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(['原始标准号', '补全标准号', '标准名称', '状态'])
@@ -203,16 +134,19 @@ class ExcelDialog(QtWidgets.QDialog):
         self.table.setColumnWidth(2, 300)
         self.table.setColumnWidth(3, 100)
         self.table.setAlternatingRowColors(True)
+        self.table.setMinimumHeight(200)
         
-        layout.addWidget(QtWidgets.QLabel("处理结果："), 0)
-        layout.addWidget(self.table, 1)
+        table_layout.addWidget(self.table)
+        table_group.setLayout(table_layout)
+        main_layout.addWidget(table_group, 1)
         
-        # ========== 底部：日志和按钮 ==========
-        bottom_layout = QtWidgets.QHBoxLayout()
+        # ========== 4. 日志 ==========
+        log_group = QtWidgets.QGroupBox("4. 处理日志")
+        log_layout = QtWidgets.QVBoxLayout()
         
         self.log_text = QtWidgets.QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(100)
+        self.log_text.setMaximumHeight(80)
         self.log_text.setStyleSheet("""
             QTextEdit {
                 background-color: #f5f5f5;
@@ -222,21 +156,25 @@ class ExcelDialog(QtWidgets.QDialog):
             }
         """)
         
-        layout.addWidget(QtWidgets.QLabel("处理日志："), 0)
-        layout.addWidget(self.log_text, 1)
+        log_layout.addWidget(self.log_text)
+        log_group.setLayout(log_layout)
+        main_layout.addWidget(log_group)
         
-        # 导出按钮
+        # ========== 5. 底部按钮 ==========
         button_layout = QtWidgets.QHBoxLayout()
         
-        self.btn_export_excel = QtWidgets.QPushButton("导出为 Excel")
-        self.btn_export_excel.clicked.connect(self.export_excel)
+        self.btn_export_excel = QtWidgets.QPushButton("导出 Excel")
+        self.btn_export_excel.setMaximumWidth(100)
         self.btn_export_excel.setEnabled(False)
+        self.btn_export_excel.clicked.connect(self.export_excel)
         
-        self.btn_export_csv = QtWidgets.QPushButton("导出为 CSV")
-        self.btn_export_csv.clicked.connect(self.export_csv)
+        self.btn_export_csv = QtWidgets.QPushButton("导出 CSV")
+        self.btn_export_csv.setMaximumWidth(100)
         self.btn_export_csv.setEnabled(False)
+        self.btn_export_csv.clicked.connect(self.export_csv)
         
         self.btn_close = QtWidgets.QPushButton("关闭")
+        self.btn_close.setMaximumWidth(100)
         self.btn_close.clicked.connect(self.accept)
         
         button_layout.addStretch()
@@ -244,9 +182,14 @@ class ExcelDialog(QtWidgets.QDialog):
         button_layout.addWidget(self.btn_export_csv)
         button_layout.addWidget(self.btn_close)
         
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
         
-        self.setLayout(layout)
+        self.setLayout(main_layout)
+    
+    def append_log(self, message: str):
+        """添加日志"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.log_text.append(f"[{timestamp}] {message}")
     
     def select_file(self):
         """选择 Excel 文件"""
@@ -262,21 +205,20 @@ class ExcelDialog(QtWidgets.QDialog):
             file_name = Path(file_path).name
             self.label_file.setText(file_name)
             self.btn_process.setEnabled(True)
-            self.append_log(f"选择文件: {file_name}")
+            self.append_log(f"已选择: {file_name}")
     
     def process_file(self):
         """处理文件"""
-        if not hasattr(self, 'excel_file'):
+        if not self.excel_file:
             QtWidgets.QMessageBox.warning(self, "提示", "请先选择 Excel 文件")
             return
         
         # 禁用按钮
-        self.btn_process.setEnabled(False)
         self.btn_select.setEnabled(False)
-        self.btn_export_excel.setEnabled(False)
-        self.btn_export_csv.setEnabled(False)
+        self.btn_process.setEnabled(False)
+        self.processing = True
         
-        # 清空结果
+        # 清空之前的结果
         self.table.setRowCount(0)
         self.log_text.clear()
         
@@ -285,94 +227,90 @@ class ExcelDialog(QtWidgets.QDialog):
         self.label_progress.setVisible(True)
         self.progress_bar.setValue(0)
         
-        # 启动后台线程
         self.append_log("开始处理...")
         
-        class ProcessThread(threading.Thread):
-            def __init__(self, parent):
-                super().__init__(daemon=True)
-                self.parent = parent
+        # 在后台线程处理
+        thread = threading.Thread(target=self._process_in_background, daemon=True)
+        thread.start()
+    
+    def _process_in_background(self):
+        """在后台线程中处理"""
+        try:
+            self.append_log("读取 Excel 文件...")
+            df = pd.read_excel(self.excel_file)
             
-            def run(self):
-                try:
-                    df = pd.read_excel(self.parent.excel_file)
-                    if df.empty:
-                        self.parent.signals.error_occurred.emit("Excel 文件为空")
-                        return
-                    
-                    # 获取标准号列
-                    std_col = None
-                    for col in df.columns:
-                        if '标准' in col or '号' in col:
-                            std_col = col
-                            break
-                    if std_col is None:
-                        std_col = df.columns[0]
-                    
-                    self.parent.signals.status_changed.emit(f"开始处理 {len(df)} 行标准号...")
-                    
-                    # 处理每一行
-                    results = []
-                    for idx, row in df.iterrows():
-                        std_no = str(row[std_col]).strip()
-                        if not std_no or std_no.lower() == 'nan':
-                            results.append({
-                                '原始标准号': std_no,
-                                '补全标准号': '',
-                                '标准名称': '',
-                                '状态': '空值'
-                            })
-                        else:
-                            # 处理标准号
-                            full_std_no, name, status = self.parent.processor.process_standard(std_no)
-                            results.append({
-                                '原始标准号': std_no,
-                                '补全标准号': full_std_no,
-                                '标准名称': name,
-                                '状态': status
-                            })
-                        
-                        # 更新进度
-                        self.parent.signals.progress_updated.emit(idx + 1, len(df))
-                    
-                    # 创建结果 DataFrame
-                    result_df = pd.DataFrame(results)
-                    self.parent.signals.result_ready.emit(result_df)
-                    self.parent.signals.status_changed.emit(f"处理完成！共处理 {len(df)} 行")
-                    
-                except Exception as e:
-                    self.parent.signals.error_occurred.emit(f"处理失败: {str(e)}")
+            if df.empty:
+                self.append_log("❌ Excel 文件为空")
+                return
+            
+            # 获取标准号列
+            std_col = None
+            for col in df.columns:
+                if '标准' in col or '号' in col:
+                    std_col = col
+                    break
+            if std_col is None:
+                std_col = df.columns[0]
+            
+            self.append_log(f"开始处理 {len(df)} 行标准号...")
+            
+            # 处理每一行
+            results = []
+            for idx, row in df.iterrows():
+                std_no = str(row[std_col]).strip()
+                
+                if not std_no or std_no.lower() == 'nan':
+                    results.append({
+                        '原始标准号': std_no,
+                        '补全标准号': '',
+                        '标准名称': '',
+                        '状态': '空值'
+                    })
+                else:
+                    try:
+                        # 处理标准号
+                        full_std_no, name, status = self.processor.process_standard(std_no)
+                        results.append({
+                            '原始标准号': std_no,
+                            '补全标准号': full_std_no,
+                            '标准名称': name,
+                            '状态': status
+                        })
+                    except Exception as e:
+                        results.append({
+                            '原始标准号': std_no,
+                            '补全标准号': '',
+                            '标准名称': '',
+                            '状态': f'错误: {str(e)[:20]}'
+                        })
+                
+                # 更新进度
+                self.progress_bar.setMaximum(len(df))
+                self.progress_bar.setValue(idx + 1)
+                self.label_progress.setText(f"{idx + 1}/{len(df)}")
+                QtWidgets.QApplication.processEvents()
+            
+            # 显示结果
+            self.result_df = pd.DataFrame(results)
+            self.show_results(self.result_df)
+            
+            self.append_log(f"✓ 处理完成！共 {len(results)} 行")
+            
+            # 启用导出按钮
+            self.btn_export_excel.setEnabled(True)
+            self.btn_export_csv.setEnabled(True)
+            
+        except Exception as e:
+            self.append_log(f"❌ 处理出错: {str(e)}")
+            QtWidgets.QMessageBox.warning(self, "处理出错", f"发生错误:\n{str(e)}")
         
-        self.worker_thread = ProcessThread(self)
-        self.worker_thread.start()
-    
-    def on_progress_updated(self, current, total):
-        """更新进度"""
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(current)
-        self.label_progress.setText(f"{current}/{total}")
-    
-    def on_result_ready(self, result_df):
-        """处理完成，显示结果"""
-        self.result_df = result_df
-        self.show_results(result_df)
-        
-        # 启用导出按钮
-        self.btn_export_excel.setEnabled(True)
-        self.btn_export_csv.setEnabled(True)
-    
-    def on_error(self, error_msg):
-        """处理错误"""
-        self.append_log(f"❌ {error_msg}")
-        QtWidgets.QMessageBox.warning(self, "处理出错", error_msg)
-        
-        # 恢复按钮状态
-        self.btn_process.setEnabled(True)
-        self.btn_select.setEnabled(True)
-    
-    def on_status_changed(self, status):
-        """状态变化"""
-        self.append_log(status)
+        finally:
+            # 恢复按钮状态
+            self.btn_select.setEnabled(True)
+            self.btn_process.setEnabled(True)
+            self.progress_bar.setVisible(False)
+            self.label_progress.setVisible(False)
+            self.processing = False
     
     def show_results(self, df: pd.DataFrame):
         """显示结果表格"""
@@ -435,9 +373,3 @@ class ExcelDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.information(self, "成功", f"已导出到:\n{file_path}")
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "导出失败", str(e))
-    
-    def append_log(self, message: str):
-        """添加日志"""
-        from datetime import datetime
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        self.log_text.append(f"[{timestamp}] {message}")

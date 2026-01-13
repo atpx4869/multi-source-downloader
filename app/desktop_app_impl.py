@@ -2879,14 +2879,11 @@ class MainWindow(QtWidgets.QMainWindow):
         from app.excel_dialog import ExcelDialog
         
         dialog = ExcelDialog(self)
-        dialog.exec()
+        # 兼容 PySide2 和 PySide6
+        if hasattr(dialog, 'exec'):
+            dialog.exec()
         else:
-            # 服务器已在运行
-            try:
-                webbrowser.open("http://localhost:5000")
-                self.append_log("✅ Web应用已打开浏览器")
-            except Exception as e:
-                self.append_log(f"⚠️ 打开浏览器失败: {e}")
+            dialog.exec_()
 
     def _run_web_server(self):
         """在后台线程中运行Flask web服务器"""
