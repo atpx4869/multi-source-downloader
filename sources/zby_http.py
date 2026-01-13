@@ -11,6 +11,7 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
 
     Returns empty list on failure.
     """
+    print(f"[ZBY HTTP] 调用API，关键词: {keyword}, page: {page}, size: {page_size}")
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://bz.zhenggui.vip", "Origin": "https://bz.zhenggui.vip", "Content-Type": "application/json;charset=UTF-8"}
     body = {
         "params": {
@@ -37,8 +38,11 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
     # 搜索时不重试，快速失败
     j = call_api(session, 'POST', api_url, json_body=body, headers=headers, timeout=timeout, retries=0)
     if j is None:
+        print(f"[ZBY HTTP] API返回为空")
         return []
+    print(f"[ZBY HTTP] API返回JSON: {str(j)[:200]}...")
     rows = find_rows(j)
+    print(f"[ZBY HTTP] 解析到 {len(rows)} 条数据")
     
     # 修正状态逻辑：如果状态为废止(2)但实施日期在未来，则修正为即将实施(3)
     import time

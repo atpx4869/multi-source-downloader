@@ -136,6 +136,9 @@ DIALOG_STYLE = f"""
     QLabel {{
         color: {TEXT_COLOR};
     }}
+    QPushButton {{
+        color: {WHITE};
+    }}
     QLineEdit {{
         background-color: {WHITE};
         border: 1px solid {BORDER_COLOR};

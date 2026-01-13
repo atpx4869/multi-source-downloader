@@ -199,21 +199,27 @@ class ZBYSource:
             if num_match:
                 keywords_to_try.append(num_match.group(1))
             
+            print(f"[ZBY DEBUG] 尝试搜索关键词: {keywords_to_try}")
+            
             # 去重并保持顺序
             keywords_to_try = list(dict.fromkeys(keywords_to_try))
             
             rows = []
             for kw in keywords_to_try:
                 try:
+                    print(f"[ZBY DEBUG] 正在尝试关键词: '{kw}'")
                     rows = search_via_api(kw, page=page, page_size=page_size, session=session, timeout=8)
+                    print(f"[ZBY DEBUG] 关键词 '{kw}' 返回 {len(rows)} 条原始结果")
                     if rows:
                         # 过滤结果，确保标准号匹配（模糊匹配）
                         filtered_rows = []
                         clean_keyword = re.sub(r'[^A-Z0-9]', '', keyword.upper())
+                        print(f"[ZBY DEBUG] 清理后的关键词: '{clean_keyword}'")
                         for r in rows:
                             r_no = re.sub(r'[^A-Z0-9]', '', (r.get('standardNumDeal') or '').upper())
                             if clean_keyword in r_no or r_no in clean_keyword:
                                 filtered_rows.append(r)
+                        print(f"[ZBY DEBUG] 过滤后剩余 {len(filtered_rows)} 条结果")
                         if filtered_rows:
                             rows = filtered_rows
                             break  # 有匹配结果，不再尝试其他关键词
@@ -221,6 +227,7 @@ class ZBYSource:
                     continue  # 当前关键词失败，尝试下一个
             
             if rows:
+                print(f"[ZBY DEBUG] 开始转换 {len(rows)} 条结果为Standard对象")
                 for row in rows:
                     try:
                         # Prefer standardNum (contains HTML) over standardNumDeal (stripped)
@@ -242,8 +249,10 @@ class ZBYSource:
                         pub = (row.get('standardPubTime') or row.get('publish') or '')
                         impl = (row.get('standardUsefulDate') or row.get('standardUsefulTime') or row.get('standardUseDate') or row.get('implement') or '')
                         items.append(Standard(std_no=std_no, name=name, publish=str(pub)[:10], implement=str(impl)[:10], status=status, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
-                    except Exception:
+                    except Exception as e:
+                        print(f"[ZBY DEBUG] 转换失败: {e}")
                         pass
+                print(f"[ZBY DEBUG] 成功转换 {len(items)} 条Standard对象")
                 return items[:int(page_size)]
             
             # API 返回空：尝试 HTML 爬虫（对行业标准如 QB/T 更友好）
