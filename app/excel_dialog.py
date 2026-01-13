@@ -31,6 +31,47 @@ class ExcelDialog(QtWidgets.QDialog):
         self.setGeometry(100, 100, 1000, 700)
         self.setModal(True)
         
+        # 设置对话框样式，确保文字清晰可见
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f5f5f5;
+            }
+            QLabel {
+                color: #333333;
+            }
+            QGroupBox {
+                color: #333333;
+                font-weight: bold;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                color: #2196F3;
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+            }
+            QTableWidget {
+                background-color: white;
+                color: #333333;
+                gridline-color: #ddd;
+                selection-background-color: #2196F3;
+                selection-color: white;
+            }
+            QTableWidget::item {
+                color: #333333;
+            }
+            QHeaderView::section {
+                background-color: #e8e8e8;
+                color: #333333;
+                padding: 5px;
+                border: 1px solid #ddd;
+                font-weight: bold;
+            }
+        """)
+        
         self.processor = StandardProcessor()
         self.result_df = None
         self.excel_file = None
@@ -49,7 +90,7 @@ class ExcelDialog(QtWidgets.QDialog):
         file_layout = QtWidgets.QHBoxLayout()
         
         self.label_file = QtWidgets.QLabel("未选择文件")
-        self.label_file.setStyleSheet("color: #666; padding: 5px;")
+        self.label_file.setStyleSheet("color: #666666; padding: 5px;")
         
         self.btn_select = QtWidgets.QPushButton("选择 Excel 文件")
         self.btn_select.setMaximumWidth(120)
@@ -113,7 +154,7 @@ class ExcelDialog(QtWidgets.QDialog):
         
         self.label_progress = QtWidgets.QLabel("")
         self.label_progress.setVisible(False)
-        self.label_progress.setStyleSheet("color: #666; font-size: 11px; min-width: 50px;")
+        self.label_progress.setStyleSheet("color: #333333; font-size: 11px; min-width: 50px;")
         
         process_layout.addWidget(self.btn_process)
         process_layout.addWidget(self.progress_bar, 1)
@@ -149,7 +190,8 @@ class ExcelDialog(QtWidgets.QDialog):
         self.log_text.setMaximumHeight(80)
         self.log_text.setStyleSheet("""
             QTextEdit {
-                background-color: #f5f5f5;
+                background-color: #ffffff;
+                color: #333333;
                 border: 1px solid #ddd;
                 font-family: Courier;
                 font-size: 10px;
