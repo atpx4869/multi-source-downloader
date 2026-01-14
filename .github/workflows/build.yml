@@ -119,6 +119,7 @@ jobs:
         BUILD_DATE: ${{ steps.build_info.outputs.date }}
         BUILD_SIZE: ${{ steps.build_info.outputs.size }}
         BUILD_HASH: ${{ steps.build_info.outputs.hash }}
+        NUITKA_VER: ${{ env.NUITKA_VERSION }}
       run: |
         $versionInfo = @"
 # MultiSourceDownloader v4.0 - Windows 10+
@@ -127,7 +128,7 @@ jobs:
 - **Build Date**: $env:BUILD_DATE
 - **File Size**: $env:BUILD_SIZE MB
 - **Hash (SHA256)**: $env:BUILD_HASH...
-- **Compiler**: Nuitka ${{ env.NUITKA_VERSION }}
+- **Compiler**: Nuitka $env:NUITKA_VER
 - **Python Version**: 3.11
 - **UI Framework**: PySide6 6.4+
 - **Target OS**: Windows 10, 11
@@ -276,6 +277,7 @@ jobs:
         BUILD_DATE: ${{ steps.build_info_win7.outputs.date }}
         BUILD_SIZE: ${{ steps.build_info_win7.outputs.size }}
         BUILD_HASH: ${{ steps.build_info_win7.outputs.hash }}
+        NUITKA_VER: ${{ env.NUITKA_VERSION }}
       run: |
         $versionInfo = @"
 # MultiSourceDownloader v4.0 - Windows 7+
@@ -284,7 +286,7 @@ jobs:
 - **Build Date**: $env:BUILD_DATE
 - **File Size**: $env:BUILD_SIZE MB
 - **Hash (SHA256)**: $env:BUILD_HASH...
-- **Compiler**: Nuitka ${{ env.NUITKA_VERSION }}
+- **Compiler**: Nuitka $env:NUITKA_VER
 - **Python Version**: 3.8
 - **UI Framework**: PySide2 5.15+
 - **Target OS**: Windows 7, 8, 10, 11
