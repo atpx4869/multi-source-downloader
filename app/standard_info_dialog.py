@@ -25,11 +25,12 @@ except ImportError:
 class StandardInfoDialog(QtWidgets.QDialog):
     """标准查新对话框"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, parent_settings=None):
         super().__init__(parent)
         self.setWindowTitle("标准查新 - 批量查询元数据")
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(50, 50, 1400, 800)  # 加宽窗口以容纳更多内容
         self.setModal(True)
+        self.parent_settings = parent_settings  # 保存主程序配置
         
         # 设置对话框样式
         self.setStyleSheet("""
@@ -121,14 +122,34 @@ class StandardInfoDialog(QtWidgets.QDialog):
         # 数据源选择
         source_layout = QtWidgets.QHBoxLayout()
         self.cb_zby = QtWidgets.QCheckBox("ZBY")
-        self.cb_zby.setChecked(True)
         self.cb_by = QtWidgets.QCheckBox("BY")
-        self.cb_by.setChecked(False)
         self.cb_gbw = QtWidgets.QCheckBox("GBW")
-        self.cb_gbw.setChecked(False)
+        
+        # 刷新按钮
+        self.btn_refresh_sources = QtWidgets.QPushButton("刷新")
+        self.btn_refresh_sources.setMaximumWidth(60)
+        self.btn_refresh_sources.clicked.connect(self.refresh_sources_from_parent)
+        self.btn_refresh_sources.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #455A64;
+            }
+        """)
+        
+        # 初始化数据源选择（从主程序配置加载）
+        self._init_sources_from_parent()
+        
         source_layout.addWidget(self.cb_zby)
         source_layout.addWidget(self.cb_by)
         source_layout.addWidget(self.cb_gbw)
+        source_layout.addWidget(self.btn_refresh_sources)
         source_layout.addStretch()
         config_layout.addRow("数据源:", source_layout)
         
@@ -196,13 +217,20 @@ class StandardInfoDialog(QtWidgets.QDialog):
         result_layout = QtWidgets.QVBoxLayout()
         
         self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels([
             '原始标准号', '规范标准号', '标准名称', 
-            '发布日期', '实施日期', '状态', '替代标准', '来源'
+            '发布日期', '实施日期', '状态', 
+            '替代标准', '替代实施日期', '替代标准名称',
+            '是否变更'
         ])
         self.table.horizontalHeader().setStretchLastSection(False)
+        # 设置列宽模式：原始标准号、规范标准号、替代标准自适应内容，标准名称、替代名称拉伸
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(8, QtWidgets.QHeaderView.Stretch)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -298,6 +326,24 @@ class StandardInfoDialog(QtWidgets.QDialog):
             self.label_file.setStyleSheet("color: #4CAF50; padding: 5px; font-weight: bold;")
             self.btn_process.setEnabled(True)
     
+    def _init_sources_from_parent(self):
+        """从主程序配置初始化数据源选择"""
+        if self.parent_settings and 'sources' in self.parent_settings:
+            parent_sources = self.parent_settings['sources']
+            self.cb_zby.setChecked('ZBY' in parent_sources)
+            self.cb_by.setChecked('BY' in parent_sources)
+            self.cb_gbw.setChecked('GBW' in parent_sources)
+        else:
+            # 默认只选择ZBY
+            self.cb_zby.setChecked(True)
+            self.cb_by.setChecked(False)
+            self.cb_gbw.setChecked(False)
+    
+    def refresh_sources_from_parent(self):
+        """刷新数据源选择（从主程序配置）"""
+        self._init_sources_from_parent()
+        QtWidgets.QMessageBox.information(self, "提示", "已同步主程序的数据源配置")
+    
     def get_enabled_sources(self):
         """获取启用的数据源"""
         sources = []
@@ -367,11 +413,91 @@ class StandardInfoDialog(QtWidgets.QDialog):
                 progress = 40 + int((i / total) * 50)
                 self.update_status(f"查询中 ({i}/{total}): {std_no}", progress)
                 
-                # 搜索标准
-                search_results = self.downloader.search(std_no, limit=1)
+                # 搜索标准 - 增加limit以便智能筛选
+                import re
+                has_year = bool(re.search(r'-\d{4}$', std_no.strip()))
+                
+                # 提取年份的辅助函数
+                def extract_year(r):
+                    match = re.search(r'-(\d{4})$', r.std_no)
+                    return int(match.group(1)) if match else 0
+                
+                # 先搜索精确匹配
+                search_results = self.downloader.search(std_no, limit=10)
+                
+                # 如果带年代号，额外搜索不带年代号的版本以查找更新版本
+                all_versions = []
+                if has_year and search_results:
+                    base_std_no = re.sub(r'-\d{4}$', '', std_no.strip())
+                    all_versions = self.downloader.search(base_std_no, limit=10)
                 
                 if search_results:
-                    result = search_results[0]
+                    # 智能选择：如果不带年代号，优先选择现行标准
+                    
+                    # 提取年份的辅助函数
+                    def extract_year(r):
+                        match = re.search(r'-(\d{4})$', r.std_no)
+                        return int(match.group(1)) if match else 0
+                    
+                    if not has_year and len(search_results) > 1:
+                        # 不带年代号，优先选择现行标准
+                        current_results = [r for r in search_results if r.status and "现行" in r.status]
+                        if current_results:
+                            # 如果有多个现行标准，选择年份最新的
+                            current_results.sort(key=extract_year, reverse=True)
+                            result = current_results[0]
+                        else:
+                            # 没有现行标准，选择年份最新的
+                            search_results.sort(key=extract_year, reverse=True)
+                            result = search_results[0]
+                    else:
+                        # 带年代号或只有一个结果，直接使用
+                        result = search_results[0]
+                    
+                    # 智能判断替代标准和变更状态
+                    replace_std_text = result.replace_std or ''
+                    replace_implement = ''
+                    replace_name = ''
+                    is_changed = ''
+                    
+                    # 情况1：API明确返回了替代标准
+                    if replace_std_text.strip():
+                        is_changed = '变更'
+                    
+                    # 情况2和3：尝试通过搜索所有版本来查找替代标准
+                    # 无论是否带年代号，都尝试查找更新版本
+                    if not replace_std_text.strip():  # 只有在API没有返回替代标准时才查找
+                        # 获取所有版本（如果还没获取）
+                        if not all_versions:
+                            base_std_no = re.sub(r'-\d{4}$', '', result.std_no.strip())
+                            all_versions = self.downloader.search(base_std_no, limit=10)
+                        
+                        if all_versions and len(all_versions) > 1:
+                            # 只看基础标准号完全相同的版本
+                            current_year = extract_year(result)
+                            base_std_no = re.sub(r'-\d{4}$', '', result.std_no.strip())
+                            
+                            # 过滤出基础标准号完全相同的版本
+                            same_base_versions = [
+                                r for r in all_versions 
+                                if re.sub(r'-\d{4}$', '', r.std_no.strip()) == base_std_no
+                            ]
+                            
+                            # 在同一标准号的版本中查找更新的
+                            newer_versions = [r for r in same_base_versions if extract_year(r) > current_year]
+                            if newer_versions:
+                                # 找到了更新的版本
+                                newer_versions.sort(key=extract_year, reverse=True)
+                                newest = newer_versions[0]
+                                replace_std_text = newest.std_no
+                                replace_implement = newest.implement or ''
+                                replace_name = newest.name or ''
+                                is_changed = '变更'
+                    
+                    # 如果状态为废止，确保标记为变更（即使没找到替代标准）
+                    if result.status and ('废止' in result.status or '即将废止' in result.status):
+                        is_changed = '变更'
+                    
                     results.append({
                         '原始标准号': std_no,
                         '规范标准号': result.std_no,
@@ -379,8 +505,10 @@ class StandardInfoDialog(QtWidgets.QDialog):
                         '发布日期': result.publish or '',
                         '实施日期': result.implement or '',
                         '状态': result.status or '',
-                        '替代标准': result.replace_std or '',
-                        '来源': ', '.join(result.sources) if hasattr(result, 'sources') and result.sources else 'ZBY'
+                        '替代标准': replace_std_text,
+                        '替代实施日期': replace_implement,
+                        '替代标准名称': replace_name,
+                        '是否变更': is_changed
                     })
                 else:
                     results.append({
@@ -391,7 +519,9 @@ class StandardInfoDialog(QtWidgets.QDialog):
                         '实施日期': '',
                         '状态': '',
                         '替代标准': '',
-                        '来源': ''
+                        '替代实施日期': '',
+                        '替代标准名称': '',
+                        '是否变更': ''
                     })
             
             # 6. 显示结果
@@ -472,6 +602,11 @@ class StandardInfoDialog(QtWidgets.QDialog):
                         item.setBackground(QtGui.QColor("#f8d7da"))
                         item.setForeground(QtGui.QColor("#721c24"))
                 
+                # 是否变更列颜色（浅蓝色）
+                if col_name == '是否变更' and value == '变更':
+                    item.setBackground(QtGui.QColor("#cfe2ff"))  # 浅蓝色
+                    item.setForeground(QtGui.QColor("#084298"))  # 深蓝色文字
+                
                 self.table.setItem(row_pos, col_idx, item)
         
         self.btn_export_excel.setEnabled(True)
@@ -493,7 +628,7 @@ class StandardInfoDialog(QtWidgets.QDialog):
         )
     
     def export_excel(self):
-        """导出为 Excel"""
+        """导出为 Excel（包含格式）"""
         if self.result_df is None or self.result_df.empty:
             QtWidgets.QMessageBox.warning(self, "提示", "暂无结果可导出！")
             return
@@ -507,7 +642,103 @@ class StandardInfoDialog(QtWidgets.QDialog):
         
         if file_path:
             try:
+                # 导出到Excel
                 self.result_df.to_excel(file_path, index=False, engine='openpyxl')
+                
+                # 使用openpyxl添加格式
+                from openpyxl import load_workbook
+                from openpyxl.styles import Border, Side, Alignment, PatternFill, Font
+                
+                workbook = load_workbook(file_path)
+                worksheet = workbook.active
+                
+                # 定义边框样式
+                thin_border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+                
+                # 定义填充色（浅蓝色，与UI一致）
+                light_blue_fill = PatternFill(start_color="D9E8F5", end_color="D9E8F5", fill_type="solid")
+                
+                # 定义状态颜色（与UI保持一致）
+                # 现行 - 浅绿色
+                status_active_fill = PatternFill(start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+                status_active_font = Font(color="155724", bold=False)
+                # 废止 - 浅红色
+                status_obsolete_fill = PatternFill(start_color="F8D7DA", end_color="F8D7DA", fill_type="solid")
+                status_obsolete_font = Font(color="721C24", bold=False)
+                
+                # 遍历所有单元格，添加边框、设置行高和对齐方式
+                max_row = worksheet.max_row
+                max_col = worksheet.max_column
+                
+                # 查找"是否变更"和"状态"列的位置
+                change_col_idx = None
+                status_col_idx = None
+                if max_row > 0:
+                    for col in range(1, max_col + 1):
+                        header_cell = worksheet.cell(row=1, column=col)
+                        if header_cell.value == '是否变更':
+                            change_col_idx = col
+                        elif header_cell.value == '状态':
+                            status_col_idx = col
+
+                
+                for row in range(1, max_row + 1):
+                    # 设置行高为14
+                    worksheet.row_dimensions[row].height = 14
+                    
+                    for col in range(1, max_col + 1):
+                        cell = worksheet.cell(row=row, column=col)
+                        # 添加边框
+                        cell.border = thin_border
+                        # 设置对齐方式和自动换行
+                        cell.alignment = Alignment(wrap_text=True, vertical='center', horizontal='left')
+                        
+                        # 跳过表头行
+                        if row == 1:
+                            continue
+                        
+                        # 根据状态列的值应用不同的填充色
+                        if col == status_col_idx and cell.value:
+                            cell_value = str(cell.value)
+                            if '现行' in cell_value or 'active' in cell_value.lower():
+                                cell.fill = status_active_fill
+                                cell.font = status_active_font
+                            elif '废止' in cell_value or 'supersede' in cell_value.lower():
+                                cell.fill = status_obsolete_fill
+                                cell.font = status_obsolete_font
+                        
+                        # 如果是"是否变更"列且值为"变更"，添加填充色
+                        if col == change_col_idx and cell.value == '变更':
+                            cell.fill = light_blue_fill
+                
+                # 自适应列宽
+                for col_idx in range(1, max_col + 1):
+                    max_length = 0
+                    col_letter = worksheet.cell(row=1, column=col_idx).column_letter
+                    
+                    for row in range(1, max_row + 1):
+                        cell = worksheet.cell(row=row, column=col_idx)
+                        try:
+                            if cell.value:
+                                # 计算文本长度（中文按2个字符计算）
+                                cell_length = len(str(cell.value))
+                                for char in str(cell.value):
+                                    if ord(char) > 127:  # 中文字符
+                                        cell_length += 1
+                                max_length = max(max_length, cell_length)
+                        except:
+                            pass
+                    
+                    # 设置列宽（加上一点余量）
+                    adjusted_width = min(max_length + 2, 50)  # 最大宽度50
+                    worksheet.column_dimensions[col_letter].width = adjusted_width
+                
+                workbook.save(file_path)
                 QtWidgets.QMessageBox.information(
                     self, "成功", f"已成功导出到:\n{file_path}"
                 )

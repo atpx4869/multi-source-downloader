@@ -274,6 +274,17 @@ class ZBYSource:
                         }
                         status = status_map.get(status_code, str(status_code) if status_code is not None else '')
                         
+                        # 修正状态逻辑：如果状态为"即将实施"但实施日期在过去，则修正为"现行"
+                        impl = (row.get('standardUsefulDate') or row.get('standardUsefulTime') or row.get('standardUseDate') or row.get('implement') or '')
+                        if status == '即将实施' and impl:
+                            try:
+                                from datetime import datetime
+                                impl_date = str(impl)[:10]
+                                if impl_date and impl_date < datetime.now().strftime('%Y-%m-%d'):
+                                    status = '现行'
+                            except:
+                                pass
+                        
                         # 提取替代标准信息
                         replace_std = ''
                         # 尝试从各种可能的字段中提取替代标准
@@ -293,7 +304,7 @@ class ZBYSource:
                         meta = row
                         # Normalize publish/implement fields from possible API keys
                         pub = (row.get('standardPubTime') or row.get('publish') or '')
-                        impl = (row.get('standardUsefulDate') or row.get('standardUsefulTime') or row.get('standardUseDate') or row.get('implement') or '')
+                        # impl 已在状态修正时提取，复用
                         items.append(Standard(std_no=std_no, name=name, publish=str(pub)[:10], implement=str(impl)[:10], status=status, replace_std=replace_std, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
                     except Exception as e:
                         print(f"[ZBY DEBUG] 转换失败: {e}")

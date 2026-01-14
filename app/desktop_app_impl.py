@@ -3371,7 +3371,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """打开标准查新对话框"""
         from app.standard_info_dialog import StandardInfoDialog
         
-        dialog = StandardInfoDialog(self)
+        dialog = StandardInfoDialog(self, parent_settings=self.settings)
         # 兼容 PySide2 和 PySide6
         if hasattr(dialog, 'exec'):
             dialog.exec()
@@ -3679,8 +3679,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.append_log(f"📦 缓存命中，返回 {len(cache_results)} 条记录")
                     self.all_items = cache_results
                     self.current_page = 1
+                    # 对缓存结果也执行智能过滤
+                    self._apply_smart_filter_for_no_year()
                     self.apply_filter()
-                    self.status.showMessage(f"已从缓存加载 {len(cache_results)} 条结果", 3000)
+                    self.status.showMessage(f"已从缓存加载 {len(self.all_items)} 条结果", 3000)
                     self.progress_bar.hide()
                     self.btn_search.setEnabled(True)
                     return
@@ -3806,9 +3808,98 @@ class MainWindow(QtWidgets.QMainWindow):
         self.apply_filter()
 
         self.status.showMessage(f"{source_name} 完成，当前共 {len(self.all_items)} 条结果", 2000)
+    
+    def _apply_smart_filter_for_no_year(self):
+        """智能过滤：当搜索关键词不带年代号时，只保留现行标准或最新版本"""
+        self.append_log(f"   [DEBUG] 智能过滤开始: keyword='{self.last_keyword if self.last_keyword else 'None'}', items={len(self.all_items) if self.all_items else 0}")
+        
+        if not self.last_keyword or not self.all_items:
+            self.append_log(f"   ⚠️  智能过滤跳过")
+            return
+        
+        # 检测是否带年代号（例如 GB/T 1234-2024 或 QB/T 2280-2016）
+        import re
+        has_year_pattern = re.compile(r'-\d{4}$')
+        keyword_has_year = bool(has_year_pattern.search(self.last_keyword.strip()))
+        self.append_log(f"   [DEBUG] 关键词带年号={keyword_has_year}")
+        
+        if keyword_has_year:
+            # 带年代号，不需要过滤
+            self.append_log(f"   ℹ️  关键词带年代号，跳过智能过滤")
+            return
+        
+        # 不带年代号，执行智能过滤
+        self.append_log(f"   🔍 检测到不带年代号的搜索，自动筛选现行标准...")
+        
+        # 提取基础标准号（去除年代号）
+        def get_base_std_no(std_no: str) -> str:
+            """提取基础标准号，去除年代号"""
+            cleaned = has_year_pattern.sub('', std_no).strip()
+            return cleaned
+        
+        # 按基础标准号分组
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for item in self.all_items:
+            std_no = item.get("std_no", "")
+            base = get_base_std_no(std_no)
+            if base:
+                groups[base].append(item)
+        
+        # 为每组选择最佳标准（优先现行，其次最新年份）
+        filtered_items = []
+        for base_std_no, items in groups.items():
+            if len(items) == 1:
+                # 只有一个版本，直接保留
+                filtered_items.append(items[0])
+                continue
+            
+            # 优先选择"现行"标准
+            current_items = [item for item in items if "现行" in item.get("status", "")]
+            
+            if current_items:
+                # 有现行标准，选择年份最新的
+                def extract_year(item):
+                    std_no = item.get("std_no", "")
+                    match = re.search(r'-(\d{4})$', std_no)
+                    return int(match.group(1)) if match else 0
+                
+                current_items.sort(key=extract_year, reverse=True)
+                best_item = current_items[0]
+                filtered_items.append(best_item)
+                
+                # 记录日志
+                if len(items) > 1:
+                    self.append_log(f"      ✅ {base_std_no}: 保留现行标准 {best_item.get('std_no')}")
+            else:
+                # 没有现行标准，选择年份最新的
+                def extract_year(item):
+                    std_no = item.get("std_no", "")
+                    match = re.search(r'-(\d{4})$', std_no)
+                    return int(match.group(1)) if match else 0
+                
+                items.sort(key=extract_year, reverse=True)
+                best_item = items[0]
+                filtered_items.append(best_item)
+                
+                if len(items) > 1:
+                    self.append_log(f"      ℹ️  {base_std_no}: 无现行标准，保留最新版本 {best_item.get('std_no')}")
+        
+        # 更新结果
+        original_count = len(self.all_items)
+        self.all_items = filtered_items
+        filtered_count = len(filtered_items)
+        
+        if original_count > filtered_count:
+            self.append_log(f"   ✅ 智能过滤完成：从 {original_count} 条结果筛选出 {filtered_count} 条现行/最新标准")
+            # 重新应用过滤和排序
+            self.apply_filter()
 
     def on_all_search_completed(self):
         """所有源搜索完成"""
+        # 智能过滤：当搜索关键词不带年代号时，只保留现行标准
+        self._apply_smart_filter_for_no_year()
+        
         self.btn_search.setEnabled(True)
         self.progress_bar.hide()
         self.status.showMessage(f"搜索完成，共找到 {len(self.all_items)} 条结果", 5000)
