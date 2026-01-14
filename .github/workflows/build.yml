@@ -3,17 +3,20 @@ name: Build MultiSourceDownloader v4.0
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
 env:
   VERSION: "4.0.0"
+  NUITKA_VERSION: "1.8.0"
 
 jobs:
   build-nuitka-win10:
     name: "Build Win10+ (Python 3.11 + Nuitka)"
     runs-on: windows-latest
+    timeout-minutes: 120
     
     steps:
     - name: Checkout code
@@ -25,11 +28,24 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
     
+    - name: Display Python info
+      run: |
+        python --version
+        pip --version
+      shell: pwsh
+    
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip setuptools
         pip install -r requirements.txt
-        pip install nuitka ordered-set zstandard
+        pip install nuitka==${{ env.NUITKA_VERSION }} ordered-set zstandard
+      shell: pwsh
+      continue-on-error: false
+    
+    - name: Verify dependencies
+      run: |
+        Write-Host "Verifying installed packages..." -ForegroundColor Cyan
+        python -c "import PySide6; import pandas; import numpy; import onnxruntime; print('All dependencies verified')"
       shell: pwsh
     
     - name: Create auth cache
@@ -43,11 +59,14 @@ jobs:
     - name: Convert icon
       run: |
         python -c "from PIL import Image; img = Image.open('core/logo.png'); img.save('app.ico', format='ICO', sizes=[(256,256)]); print('Icon converted')"
+        if (Test-Path "app.ico") { Write-Host "Icon created successfully" -ForegroundColor Green }
       shell: pwsh
     
     - name: Compile with Nuitka
+      timeout-minutes: 90
       run: |
-        Write-Host "Starting Nuitka compilation..." -ForegroundColor Cyan
+        Write-Host "Starting Nuitka compilation for Win10+..." -ForegroundColor Cyan
+        Write-Host "Python 3.11 + PySide6" -ForegroundColor Cyan
         python -m nuitka --onefile --standalone `
           --windows-console-mode=disable `
           --enable-plugin=pyside6 `
@@ -57,8 +76,26 @@ jobs:
           --assume-yes-for-downloads `
           --output-dir=dist `
           --output-filename=MultiSourceDownloader.exe `
+          --lto=auto `
           desktop_app.py
-        Write-Host "Nuitka compilation completed" -ForegroundColor Green
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "Nuitka compilation completed successfully" -ForegroundColor Green
+        } else {
+          Write-Host "Compilation failed with exit code: $LASTEXITCODE" -ForegroundColor Red
+          exit 1
+        }
+      shell: pwsh
+    
+    - name: Verify executable
+      run: |
+        if (Test-Path "dist/MultiSourceDownloader.exe") {
+          $exe = Get-Item "dist/MultiSourceDownloader.exe"
+          Write-Host "✓ Executable created: $($exe.Name)" -ForegroundColor Green
+          Write-Host "  Size: $([math]::Round($exe.Length / 1MB, 2)) MB" -ForegroundColor Green
+        } else {
+          Write-Host "✗ Executable not found!" -ForegroundColor Red
+          exit 1
+        }
       shell: pwsh
     
     - name: Get build info
@@ -67,53 +104,76 @@ jobs:
         $date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $exe = Get-Item dist/MultiSourceDownloader.exe
         $sizeMB = [math]::Round($exe.Length / 1MB, 2)
+        $hash = (Get-FileHash dist/MultiSourceDownloader.exe -Algorithm SHA256).Hash.Substring(0, 16)
         echo "date=$date" >> $env:GITHUB_OUTPUT
         echo "size=$sizeMB" >> $env:GITHUB_OUTPUT
-        Write-Host "File size: $sizeMB MB" -ForegroundColor Cyan
+        echo "hash=$hash" >> $env:GITHUB_OUTPUT
+        Write-Host "Build Info:" -ForegroundColor Cyan
+        Write-Host "  Date: $date"
+        Write-Host "  Size: $sizeMB MB"
+        Write-Host "  Hash: $hash"
       shell: pwsh
     
-    - name: Create version file
+    - name: Create version info
       env:
         BUILD_DATE: ${{ steps.build_info.outputs.date }}
         BUILD_SIZE: ${{ steps.build_info.outputs.size }}
+        BUILD_HASH: ${{ steps.build_info.outputs.hash }}
       run: |
-        echo "# MultiSourceDownloader v4.0 - Nuitka" > dist/VERSION_4.0.md
-        echo "" >> dist/VERSION_4.0.md
-        echo "## Build Info" >> dist/VERSION_4.0.md
-        echo "- Build Date: $env:BUILD_DATE" >> dist/VERSION_4.0.md
-        echo "- File Size: $env:BUILD_SIZE MB" >> dist/VERSION_4.0.md
-        echo "- Compiler: Nuitka (Native)" >> dist/VERSION_4.0.md
-        echo "- Python: 3.11" >> dist/VERSION_4.0.md
-        echo "- OS: Windows 10+" >> dist/VERSION_4.0.md
-        echo "" >> dist/VERSION_4.0.md
-        echo "## Features" >> dist/VERSION_4.0.md
-        echo "- Fast startup: 1-2 seconds" >> dist/VERSION_4.0.md
-        echo "- Native C speed" >> dist/VERSION_4.0.md
-        echo "- Full UTF-8 and Emoji support" >> dist/VERSION_4.0.md
-        echo "- Optimized size (30-40% smaller)" >> dist/VERSION_4.0.md
+        $versionInfo = @"
+# MultiSourceDownloader v4.0 - Windows 10+
+
+## Build Information
+- **Build Date**: $env:BUILD_DATE
+- **File Size**: $env:BUILD_SIZE MB
+- **Hash (SHA256)**: $env:BUILD_HASH...
+- **Compiler**: Nuitka ${{ env.NUITKA_VERSION }}
+- **Python Version**: 3.11
+- **UI Framework**: PySide6 6.4+
+- **Target OS**: Windows 10, 11
+
+## Performance Features
+- ⚡ Fast startup: 1-2 seconds
+- 🔥 Native C-compiled speed
+- 💾 Optimized binary size (30-40% smaller than PyInstaller)
+- 📝 Full UTF-8 and Emoji support
+- 🎨 Modern UI with smooth animations
+
+## System Requirements
+- Windows 10 or later
+- No additional runtime required
+- ~300-400 MB disk space
+"@
+        $versionInfo | Out-File -FilePath "dist/VERSION.txt" -Encoding UTF8
+        Write-Host "Version info created" -ForegroundColor Green
       shell: pwsh
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MultiSourceDownloader-v4.0-Nuitka-win64
+        name: MultiSourceDownloader-v4.0-win64
         path: |
           dist/MultiSourceDownloader.exe
-          dist/VERSION_4.0.md
+          dist/VERSION.txt
         retention-days: 90
+        if-no-files-found: error
     
-    - name: Show completion
+    - name: Build summary
       run: |
         Write-Host ""
-        Write-Host "Build completed successfully!" -ForegroundColor Green
-        Write-Host "File: MultiSourceDownloader.exe" -ForegroundColor White
-        Write-Host "Size: ${{ steps.build_info.outputs.size }} MB" -ForegroundColor White
+        Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║  Win10+ Build Completed Successfully!      ║" -ForegroundColor Cyan
+        Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host "  Executable: MultiSourceDownloader.exe" -ForegroundColor White
+        Write-Host "  Size: ${{ steps.build_info.outputs.size }} MB" -ForegroundColor White
+        Write-Host "  Python: 3.11 | PySide6" -ForegroundColor Gray
         Write-Host ""
       shell: pwsh
 
   build-nuitka-win7:
     name: "Build Win7 (Python 3.8 + Nuitka)"
     runs-on: windows-2019
+    timeout-minutes: 120
     
     steps:
     - name: Checkout code
@@ -125,11 +185,24 @@ jobs:
         python-version: '3.8'
         cache: 'pip'
     
+    - name: Display Python info
+      run: |
+        python --version
+        pip --version
+      shell: pwsh
+    
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip setuptools
         pip install -r requirements_win7.txt
-        pip install nuitka ordered-set zstandard
+        pip install nuitka==${{ env.NUITKA_VERSION }} ordered-set zstandard
+      shell: pwsh
+      continue-on-error: false
+    
+    - name: Verify dependencies
+      run: |
+        Write-Host "Verifying installed packages..." -ForegroundColor Cyan
+        python -c "import PySide2; import pandas; print('Dependencies verified')"
       shell: pwsh
     
     - name: Create auth cache
@@ -143,11 +216,14 @@ jobs:
     - name: Convert icon
       run: |
         python -c "from PIL import Image; img = Image.open('core/logo.png'); img.save('app.ico', format='ICO', sizes=[(256,256)]); print('Icon converted')"
+        if (Test-Path "app.ico") { Write-Host "Icon created successfully" -ForegroundColor Green }
       shell: pwsh
     
     - name: Compile with Nuitka
+      timeout-minutes: 90
       run: |
-        Write-Host "Starting Nuitka compilation (Win7)..." -ForegroundColor Cyan
+        Write-Host "Starting Nuitka compilation for Win7..." -ForegroundColor Cyan
+        Write-Host "Python 3.8 + PySide2" -ForegroundColor Cyan
         python -m nuitka --onefile --standalone `
           --windows-console-mode=disable `
           --enable-plugin=pyside2 `
@@ -157,8 +233,26 @@ jobs:
           --assume-yes-for-downloads `
           --output-dir=dist `
           --output-filename=MultiSourceDownloader-Win7.exe `
+          --lto=auto `
           desktop_app.py
-        Write-Host "Nuitka compilation completed" -ForegroundColor Green
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "Nuitka compilation completed successfully" -ForegroundColor Green
+        } else {
+          Write-Host "Compilation failed with exit code: $LASTEXITCODE" -ForegroundColor Red
+          exit 1
+        }
+      shell: pwsh
+    
+    - name: Verify executable
+      run: |
+        if (Test-Path "dist/MultiSourceDownloader-Win7.exe") {
+          $exe = Get-Item "dist/MultiSourceDownloader-Win7.exe"
+          Write-Host "✓ Executable created: $($exe.Name)" -ForegroundColor Green
+          Write-Host "  Size: $([math]::Round($exe.Length / 1MB, 2)) MB" -ForegroundColor Green
+        } else {
+          Write-Host "✗ Executable not found!" -ForegroundColor Red
+          exit 1
+        }
       shell: pwsh
     
     - name: Get build info
@@ -167,47 +261,68 @@ jobs:
         $date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $exe = Get-Item dist/MultiSourceDownloader-Win7.exe
         $sizeMB = [math]::Round($exe.Length / 1MB, 2)
+        $hash = (Get-FileHash dist/MultiSourceDownloader-Win7.exe -Algorithm SHA256).Hash.Substring(0, 16)
         echo "date=$date" >> $env:GITHUB_OUTPUT
         echo "size=$sizeMB" >> $env:GITHUB_OUTPUT
-        Write-Host "File size: $sizeMB MB" -ForegroundColor Cyan
+        echo "hash=$hash" >> $env:GITHUB_OUTPUT
+        Write-Host "Build Info:" -ForegroundColor Cyan
+        Write-Host "  Date: $date"
+        Write-Host "  Size: $sizeMB MB"
+        Write-Host "  Hash: $hash"
       shell: pwsh
     
-    - name: Create version file
+    - name: Create version info
       env:
         BUILD_DATE: ${{ steps.build_info_win7.outputs.date }}
         BUILD_SIZE: ${{ steps.build_info_win7.outputs.size }}
+        BUILD_HASH: ${{ steps.build_info_win7.outputs.hash }}
       run: |
-        echo "# MultiSourceDownloader v4.0 - Win7" > dist/VERSION_4.0_Win7.md
-        echo "" >> dist/VERSION_4.0_Win7.md
-        echo "## Build Info" >> dist/VERSION_4.0_Win7.md
-        echo "- Build Date: $env:BUILD_DATE" >> dist/VERSION_4.0_Win7.md
-        echo "- File Size: $env:BUILD_SIZE MB" >> dist/VERSION_4.0_Win7.md
-        echo "- Compiler: Nuitka (Native)" >> dist/VERSION_4.0_Win7.md
-        echo "- Python: 3.8" >> dist/VERSION_4.0_Win7.md
-        echo "- UI: PySide2" >> dist/VERSION_4.0_Win7.md
-        echo "- OS: Windows 7+" >> dist/VERSION_4.0_Win7.md
-        echo "" >> dist/VERSION_4.0_Win7.md
-        echo "## Features" >> dist/VERSION_4.0_Win7.md
-        echo "- Fast startup: 1-2 seconds" >> dist/VERSION_4.0_Win7.md
-        echo "- Native C speed" >> dist/VERSION_4.0_Win7.md
-        echo "- Full UTF-8 and Emoji support" >> dist/VERSION_4.0_Win7.md
-        echo "- Compatible with Win7/8/10/11" >> dist/VERSION_4.0_Win7.md
+        $versionInfo = @"
+# MultiSourceDownloader v4.0 - Windows 7+
+
+## Build Information
+- **Build Date**: $env:BUILD_DATE
+- **File Size**: $env:BUILD_SIZE MB
+- **Hash (SHA256)**: $env:BUILD_HASH...
+- **Compiler**: Nuitka ${{ env.NUITKA_VERSION }}
+- **Python Version**: 3.8
+- **UI Framework**: PySide2 5.15+
+- **Target OS**: Windows 7, 8, 10, 11
+
+## Performance Features
+- ⚡ Fast startup: 1-2 seconds
+- 🔥 Native C-compiled speed
+- 💾 Optimized binary size (30-40% smaller than PyInstaller)
+- 📝 Full UTF-8 and Emoji support
+- 🎯 Compatible with older Windows versions
+
+## System Requirements
+- Windows 7 or later (including 8, 10, 11)
+- No additional runtime required
+- ~300-400 MB disk space
+"@
+        $versionInfo | Out-File -FilePath "dist/VERSION_Win7.txt" -Encoding UTF8
+        Write-Host "Version info created" -ForegroundColor Green
       shell: pwsh
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MultiSourceDownloader-v4.0-Win7-Nuitka
+        name: MultiSourceDownloader-v4.0-win7
         path: |
           dist/MultiSourceDownloader-Win7.exe
-          dist/VERSION_4.0_Win7.md
+          dist/VERSION_Win7.txt
         retention-days: 90
+        if-no-files-found: error
     
-    - name: Show completion
+    - name: Build summary
       run: |
         Write-Host ""
-        Write-Host "Win7 build completed successfully!" -ForegroundColor Green
-        Write-Host "File: MultiSourceDownloader-Win7.exe" -ForegroundColor White
-        Write-Host "Size: ${{ steps.build_info_win7.outputs.size }} MB" -ForegroundColor White
+        Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
+        Write-Host "║  Win7 Build Completed Successfully!        ║" -ForegroundColor Cyan
+        Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+        Write-Host "  Executable: MultiSourceDownloader-Win7.exe" -ForegroundColor White
+        Write-Host "  Size: ${{ steps.build_info_win7.outputs.size }} MB" -ForegroundColor White
+        Write-Host "  Python: 3.8 | PySide2" -ForegroundColor Gray
         Write-Host ""
       shell: pwsh
