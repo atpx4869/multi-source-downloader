@@ -389,10 +389,24 @@ class AggregatedDownloader:
             try:
                 path = None
                 extra_logs: list[str] = []
-                try:
-                    result = src.download(clone, self.output_dir, log_cb=filtered_cb)
-                except TypeError:
-                    result = src.download(clone, self.output_dir)
+                
+                # 单个源超时保护：每个源最多10秒（防止一个源卡住拖累整体）
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    def _download_from_source():
+                        try:
+                            result = src.download(clone, self.output_dir, log_cb=filtered_cb)
+                        except TypeError:
+                            result = src.download(clone, self.output_dir)
+                        return result
+                    
+                    future = executor.submit(_download_from_source)
+                    try:
+                        result = future.result(timeout=10)  # 单个源最多10秒
+                    except concurrent.futures.TimeoutError:
+                        emit(f"{src.name}: 超时(10秒)，尝试下一个源")
+                        continue
+                
                 if isinstance(result, tuple):
                     path, extra_logs = result
                 else:

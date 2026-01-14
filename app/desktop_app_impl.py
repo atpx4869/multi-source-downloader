@@ -205,6 +205,8 @@ def is_authenticated_today() -> bool:
 def save_auth_record():
     """保存今日验证记录"""
     auth_file = get_auth_file()
+    # 确保目录存在
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y%m%d")
     auth_file.write_text(json.dumps({"date": today}), encoding="utf-8")
 
@@ -457,75 +459,73 @@ class SearchThread(QtCore.QThread):
                 self.all_completed.emit()
                 return
             
-            self.log.emit(f"🔍 开始并行搜索: {self.keyword}，来源: {', '.join(self.sources)}")
-            self.progress.emit(0, 100, f"正在搜索 {len(self.sources)} 个数据源...")
+            self.log.emit(f"🔍 开始智能搜索: {self.keyword}")
+            self.progress.emit(0, 100, "正在搜索...")
             
-            import concurrent.futures
-            import threading
+            import time
+            from core.enhanced_search import EnhancedSmartSearcher
             
-            completed_count = 0
-            total_sources = len(self.sources)
-            lock = threading.Lock()
-            
-            def search_single_source(source_name: str):
-                """搜索单个源"""
-                try:
-                    self.log.emit(f"   ↳ {source_name} 开始搜索...")
-                    
-                    # 创建单源客户端
-                    client = get_aggregated_downloader(enable_sources=[source_name], output_dir=self.output_dir)
-                    if client is None:
-                        self.log.emit(f"   ✗ {source_name} 客户端创建失败")
-                        return source_name, []
-                    
-                    # 搜索（注意：这里不使用parallel，因为单源搜索不需要并行）
-                    items = client.search(self.keyword, parallel=False, page=int(self.page), page_size=int(self.page_size))
-                    
-                    # 转换为显示格式
+            # 定义结果回调 - 查到一条显示一条
+            result_count = 0
+            def on_result_callback(source_name: str, results_batch: list):
+                nonlocal result_count
+                if results_batch:
+                    # 转换结果为显示格式
                     rows = []
-                    for it in items:
+                    for item in results_batch:
                         rows.append({
-                            "std_no": it.std_no,
-                            "name": it.name,
-                            "publish": it.publish or "",
-                            "implement": it.implement or "",
-                            "status": it.status or "",
-                            "has_pdf": bool(it.has_pdf),
-                            "obj": it,
+                            "std_no": item['std_no'],
+                            "name": item['name'],
+                            "publish": item['publish'],
+                            "implement": item['implement'],
+                            "status": item['status'],
+                            "replace_std": item['replace_std'],
+                            "has_pdf": item['has_pdf'],
+                            "sources": item['sources'],
+                            "obj": item['obj'],
                         })
                     
-                    self.log.emit(f"   ✅ {source_name} 完成: {len(rows)} 条")
-                    return source_name, rows
+                    # 立即发送这一批结果到 UI
+                    self.partial_results.emit(source_name, rows)
+                    result_count += len(rows)
                     
-                except Exception as e:
-                    self.log.emit(f"   ✗ {source_name} 失败: {str(e)[:50]}")
-                    return source_name, []
+                    # 更新进度
+                    source_display = {
+                        "ZBY": "ZBY 数据源",
+                        "GBW": "GBW 数据源",
+                        "BY": "BY 数据源",
+                        "MERGED": "合并结果"
+                    }.get(source_name, source_name)
+                    self.log.emit(f"   📥 收到 {source_display} 的 {len(rows)} 条结果（累计: {result_count} 条）")
             
-            # 使用线程池并行搜索所有源
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.sources)) as executor:
-                # 提交所有任务
-                future_to_source = {executor.submit(search_single_source, src): src for src in self.sources}
-                
-                # 按完成顺序处理结果
-                for future in concurrent.futures.as_completed(future_to_source):
-                    try:
-                        source_name, rows = future.result()
-                        
-                        # 立即发送这个源的结果（渐进式显示）
-                        if rows:
-                            self.partial_results.emit(source_name, rows)
-                        
-                        # 更新进度
-                        with lock:
-                            completed_count += 1
-                            progress = int((completed_count / total_sources) * 100)
-                            self.progress.emit(progress, 100, f"已完成 {completed_count}/{total_sources} 个数据源")
-                        
-                    except Exception as e:
-                        self.log.emit(f"❌ 处理搜索结果时出错: {e}")
+            # 使用流式搜索 - 支持多线程、容错、自动降级、实时显示
+            start_time = time.time()
+            metadata = EnhancedSmartSearcher.search_with_callback(
+                self.keyword,
+                AggregatedDownloader(),
+                self.output_dir,
+                on_result=on_result_callback
+            )
+            elapsed = time.time() - start_time
             
-            self.progress.emit(100, 100, "所有数据源搜索完成")
-            self.log.emit(f"✅ 搜索完成: 共查询 {total_sources} 个数据源")
+            # 日志反馈
+            if metadata['is_gb_standard']:
+                self.log.emit(f"   📊 GB/T 标准检测：启用多源并行搜索")
+            else:
+                self.log.emit(f"   📊 非 GB 标准：优先使用 ZBY")
+            
+            self.log.emit(f"   🔗 使用的数据源: {', '.join(metadata['sources_used'])}")
+            
+            if metadata['has_fallback']:
+                self.log.emit(f"   ⚠️  主源无结果，已自动切换到备用源: {metadata['fallback_source']}")
+            
+            # 搜索完成
+            if metadata['total_results'] > 0:
+                self.log.emit(f"   ✅ 搜索完成: 共找到 {metadata['total_results']} 条结果，耗时 {elapsed:.2f}秒")
+            else:
+                self.log.emit(f"   ℹ️  未找到匹配的标准")
+            
+            self.progress.emit(100, 100, "搜索完成")
             self.all_completed.emit()
             
         except Exception as e:
@@ -533,6 +533,8 @@ class SearchThread(QtCore.QThread):
             self.log.emit(f"❌ 搜索出错: {e}")
             self.log.emit(tb)
             self.error.emit(tb)
+            self.progress.emit(0, 100, "搜索失败")
+            self.all_completed.emit()
             self.progress.emit(0, 100, "搜索失败")
             self.all_completed.emit()
 
@@ -612,6 +614,8 @@ class SearchWorker(threading.Thread):
         self.worker_id = worker_id
         self.enable_sources = enable_sources
         self.log_signal = log_signal  # QtCore.Signal(str)
+        self.client = None  # 延迟初始化，在 run() 中创建一次
+        self.config = None
 
     def _emit_log(self, msg: str):
         """发送日志信号"""
@@ -620,8 +624,10 @@ class SearchWorker(threading.Thread):
 
     def run(self):
         """从队列中取关键词并搜索"""
+        # 一次性创建 client 和 config，在整个循环中复用（性能优化）
         try:
-            client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir="downloads")
+            self.client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir="downloads")
+            self.config = get_api_config()
         except Exception as e:
             self._emit_log(f"❌ [SearchWorker-{self.worker_id}] 初始化失败: {e}")
             return
@@ -638,7 +644,6 @@ class SearchWorker(threading.Thread):
                 std_id, idx = task
                 
                 try:
-                    config = get_api_config()
                     # 清理关键词
                     search_key = re.sub(r'\s+', ' ', std_id)
                     
@@ -649,12 +654,10 @@ class SearchWorker(threading.Thread):
                     # 尝试按优先级搜索
                     for source_name in ["BY", "GBW", "ZBY"]:
                         try:
-                            # 调用聚合下载器的搜索，指定只用某个源
-                            # 注意：这里需要改造一下，直接调用单个源
-                            results = client.search(search_key, parallel=config.parallel_search)
+                            # 调用聚合下载器的搜索，使用缓存的config
+                            results = self.client.search(search_key, parallel=self.config.parallel_search)
                             
                             if results:
-                                self._emit_log(f"   ✅ [SearchWorker-{self.worker_id}] 搜索成功: {std_id}")
                                 break
                         except Exception:
                             continue
@@ -663,7 +666,7 @@ class SearchWorker(threading.Thread):
                     if not results and '-' in search_key:
                         try:
                             short_key = search_key.split('-')[0].strip()
-                            results = client.search(short_key, parallel=config.parallel_search)
+                            results = self.client.search(short_key, parallel=self.config.parallel_search)
                         except Exception:
                             pass
                     
@@ -683,11 +686,53 @@ class SearchWorker(threading.Thread):
                 break
 
 
+class DownloadErrorClassifier:
+    """P2: 下载错误分类器（独立可复用）"""
+    
+    @staticmethod
+    def classify(error_msg: str, logs: list) -> str:
+        """
+        错误分类：区分网络错误(重试)、源不可用(跳过)、无标准(记录)
+        
+        返回值:
+        - "network": 网络错误，可重试
+        - "not_found": 源不可用，跳过
+        - "no_standard": 无标准，记录失败
+        - "corrupted": 文件损坏
+        - "unknown": 未知错误
+        """
+        error_msg_lower = error_msg.lower()
+        logs_str = " ".join(logs or []).lower()
+        
+        # 网络错误（包括超时）
+        if any(k in error_msg_lower for k in 
+               ["timeout", "超时", "连接", "网络", "connection", "timed out", "reset"]):
+            return "network"
+        
+        # 源不可用
+        if any(k in error_msg_lower or k in logs_str for k in 
+               ["403", "404", "源不可用", "无法访问", "unavailable"]):
+            return "not_found"
+        
+        # 无标准
+        if any(k in error_msg_lower or k in logs_str for k in 
+               ["未找到", "not found", "无此标准", "no standard"]):
+            return "no_standard"
+        
+        # 文件损坏
+        if any(k in error_msg_lower or k in logs_str for k in 
+               ["损坏", "corrupt", "checksum", "crc"]):
+            return "corrupted"
+        
+        return "unknown"
+
+
 class DownloadWorker(threading.Thread):
     """后台下载worker线程，从队列中取任务并执行下载"""
     
     def __init__(self, download_queue: queue.Queue, worker_id: int, output_dir: str = "downloads", 
-                 enable_sources: List[str] = None, log_signal=None, progress_signal=None, prefer_order: List[str] = None):
+                 enable_sources: List[str] = None, log_signal=None, progress_signal=None, 
+                 prefer_order: List[str] = None, failure_callback=None):
         super().__init__(daemon=True)
         self.download_queue = download_queue
         self.worker_id = worker_id
@@ -696,10 +741,13 @@ class DownloadWorker(threading.Thread):
         self.log_signal = log_signal  # QtCore.Signal(str)
         self.progress_signal = progress_signal  # QtCore.Signal(int, int, str)
         self.prefer_order = prefer_order  # 下载源优先级
+        self.failure_callback = failure_callback  # P1: 失败回调函数(std_id, reason, error_type)
         self.download_count = 0
         self.success_count = 0
         self.fail_count = 0
         self.cache_manager = get_cache_manager()
+        self.client = None  # 延迟初始化，在 run() 中创建一次
+        self.current_std_no = ""  # 记录当前正在下载的标准号
 
     def _emit_log(self, msg: str):
         """发送日志信号"""
@@ -713,8 +761,9 @@ class DownloadWorker(threading.Thread):
 
     def run(self):
         """从队列中取任务并下载"""
+        # 一次性创建 client，在整个循环中复用（性能优化）
         try:
-            client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir=self.output_dir)
+            self.client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir=self.output_dir)
         except Exception as e:
             self._emit_log(f"❌ [Worker-{self.worker_id}] 初始化下载器失败: {e}")
             return
@@ -737,6 +786,9 @@ class DownloadWorker(threading.Thread):
                 std_id, best_match = task
                 self.download_count += 1
                 
+                # 记录当前处理的标准号（用于进度显示）
+                self.current_std_no = getattr(best_match, 'std_no', std_id)[:30]
+                
                 # 智能重试策略：区分错误类型
                 self._download_with_retry(best_match)
                 
@@ -747,36 +799,19 @@ class DownloadWorker(threading.Thread):
             except Exception as e:
                 self._emit_log(f"❌ [Worker-{self.worker_id}] 异常: {str(e)[:80]}")
                 break
-
-    def _classify_error(self, error_msg: str, logs: list) -> str:
-        """
-        错误分类：区分网络错误(重试)、源不可用(跳过)、无标准(记录)
-        返回: "network" | "source_unavailable" | "not_found" | "corrupted" | "unknown"
-        """
-        error_msg_lower = error_msg.lower()
-        logs_str = " ".join(logs or []).lower() if logs else ""
         
-        # 网络错误：连接超时、临时故障、DNS等
-        if any(k in error_msg_lower or k in logs_str for k in 
-               ["timeout", "connection", "连接", "网络", "dns", "unreachable", "refused", "temporarily", "临时"]):
-            return "network"
-        
-        # 源不可用：404、503、服务不可用等
-        if any(k in error_msg_lower or k in logs_str for k in 
-               ["404", "503", "502", "不可用", "unavailable", "forbidden", "403"]):
-            return "source_unavailable"
-        
-        # 文件不存在或格式错误
-        if any(k in error_msg_lower or k in logs_str for k in 
-               ["未找到", "not found", "no such file", "无效", "corrupt", "损坏"]):
-            return "not_found"
-        
-        # 文件损坏
-        if any(k in error_msg_lower or k in logs_str for k in 
-               ["损坏", "corrupt", "checksum", "crc"]):
-            return "corrupted"
-        
-        return "unknown"
+        # Worker退出时清理资源（防止Playwright残留进程报错）
+        try:
+            if hasattr(self, 'client') and self.client:
+                # 尝试关闭Playwright资源
+                for src in self.client.sources:
+                    if hasattr(src, 'close'):
+                        try:
+                            src.close()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     def _download_with_retry(self, best_match):
         """
@@ -784,28 +819,64 @@ class DownloadWorker(threading.Thread):
         - 网络错误：重试2次
         - 源不可用：跳过该源
         - 无标准：直接记录失败
+        - 单标准超时：20秒强制中断（正常2-10秒，异常快速识别）
         """
         import time
-        
-        self._emit_log(f"⬇️  [Worker-{self.worker_id}] 处理: {best_match.std_no}")
+        import threading
         
         max_retries = 2
         retry_delay = 2
         download_success = False
         last_error = None
-        
-        # 获取client实例
-        try:
-            client = get_aggregated_downloader(enable_sources=self.enable_sources, output_dir=self.output_dir)
-        except Exception as e:
-            self._emit_log(f"[ERROR] [Worker-{self.worker_id}] 获取下载器失败: {str(e)[:60]}")
-            self.fail_count += 1
-            return
+        download_timeout = 20  # 单标准下载最长20秒（正常2-10秒，多源尝试12-20秒）
         
         for attempt in range(1, max_retries + 1):
             try:
-                # 执行下载，指定源优先级
-                path, logs = client.download(best_match, prefer_order=self.prefer_order)
+                # 使用超时线程执行下载（防止卡死）
+                result_container = {"path": None, "logs": [], "error": None}
+                
+                def _do_download():
+                    try:
+                        path, logs = self.client.download(best_match, prefer_order=self.prefer_order)
+                        result_container["path"] = path
+                        result_container["logs"] = logs
+                    except Exception as e:
+                        result_container["error"] = e
+                
+                download_thread = threading.Thread(target=_do_download, daemon=True)
+                download_thread.start()
+                download_thread.join(timeout=download_timeout)
+                
+                # 检查是否超时
+                if download_thread.is_alive():
+                    # 超时了，线程还在运行（可能卡在Playwright）
+                    error_type = "network"
+                    last_error = f"下载超时({download_timeout}s)"
+                    self._emit_log(f"   ⏱️  [Worker-{self.worker_id}] 下载超时({download_timeout}s)，强制中断")
+                    
+                    # 重新创建client，避免Playwright状态污染
+                    try:
+                        self.client = get_aggregated_downloader(
+                            enable_sources=self.enable_sources, 
+                            output_dir=self.output_dir
+                        )
+                        self._emit_log(f"   🔄 [Worker-{self.worker_id}] 已重建下载器（清理可能的残留状态）")
+                    except Exception as e:
+                        self._emit_log(f"   ⚠️  [Worker-{self.worker_id}] 重建下载器失败: {str(e)[:50]}")
+                    
+                    if attempt < max_retries:
+                        self._emit_log(f"   ⚠️  [Worker-{self.worker_id}] 第{attempt}次超时，{retry_delay}秒后重试...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        break
+                
+                # 检查下载结果
+                if result_container["error"]:
+                    raise result_container["error"]
+                
+                path = result_container["path"]
+                logs = result_container["logs"]
                 
                 if path:
                     # 成功下载
@@ -819,22 +890,26 @@ class DownloadWorker(threading.Thread):
                                 success_src = line.split(":")[0].strip()
                                 break
                     
+                    # 恢复日志输出，让用户看到进度（重要！）
                     if is_cached:
-                        self._emit_log(f"   💾 [Worker-{self.worker_id}] 缓存命中 -> {path}")
+                        self._emit_log(f"   💾 [Worker-{self.worker_id}] 缓存命中")
                     else:
-                        self._emit_log(f"   [OK] [Worker-{self.worker_id}] 下载成功 [{success_src}]")
-                        # 写入下载历史
-                        try:
-                            size_bytes = os.path.getsize(path) if os.path.exists(path) else 0
-                            self.cache_manager.save_download_record(
-                                std_no=getattr(best_match, "std_no", ""),
-                                std_name=getattr(best_match, "name", getattr(best_match, "std_name", "")) or "",
-                                source=success_src,
-                                file_path=path,
-                                file_size=size_bytes
-                            )
-                        except Exception as e:
-                            self._emit_log(f"      ⚠️  记录下载历史失败: {str(e)[:60]}")
+                        # 只显示标准号前缀和源，避免过长
+                        std_short = getattr(best_match, 'std_no', '')[:20]
+                        self._emit_log(f"   ✅ [Worker-{self.worker_id}] {std_short} [{success_src}]")
+                    
+                    # 写入下载历史
+                    try:
+                        size_bytes = os.path.getsize(path) if os.path.exists(path) else 0
+                        self.cache_manager.save_download_record(
+                            std_no=getattr(best_match, "std_no", ""),
+                            std_name=getattr(best_match, "name", getattr(best_match, "std_name", "")) or "",
+                            source=success_src,
+                            file_path=path,
+                            file_size=size_bytes
+                        )
+                    except Exception:
+                        pass  # 静默忽略历史记录错误
 
                     self.success_count += 1
                     download_success = True
@@ -842,7 +917,7 @@ class DownloadWorker(threading.Thread):
                 else:
                     # 下载返回None，判断错误类型
                     error_msg = " ".join(logs[-3:]) if logs else "未知错误"
-                    error_type = self._classify_error(error_msg, logs)
+                    error_type = DownloadErrorClassifier.classify(error_msg, logs)
                     
                     if error_type == "network" and attempt < max_retries:
                         # 网络错误 → 重试
@@ -899,7 +974,7 @@ class DownloadWorker(threading.Thread):
                             break
                     
             except Exception as e:
-                error_type = self._classify_error(str(e), [])
+                error_type = DownloadErrorClassifier.classify(str(e), [])
                 
                 if error_type == "network" and attempt < max_retries:
                     self._emit_log(f"   ⚠️  [Worker-{self.worker_id}] 第{attempt}次异常（网络），{retry_delay}秒后重试...")
@@ -912,8 +987,32 @@ class DownloadWorker(threading.Thread):
         
         # 所有尝试都失败
         if not download_success:
+            error_type = DownloadErrorClassifier.classify(last_error or "", [])
             self._emit_log(f"   ❌ [Worker-{self.worker_id}] 下载失败: {last_error or '未知原因'}")
             self.fail_count += 1
+            
+            # P1: 回调失败信息给 BatchDownloadThread
+            if self.failure_callback:
+                std_id = getattr(best_match, 'std_no', '') or getattr(best_match, 'id', '')
+                self.failure_callback(std_id, last_error or '未知原因', error_type)
+
+
+class FailedItem:
+    """失败项结构化数据类"""
+    def __init__(self, std_id: str, reason: str, error_type: str = "unknown"):
+        self.std_id = std_id
+        self.reason = reason
+        self.error_type = error_type  # "not_found", "network_error", "source_unavailable", "unknown"
+        self.timestamp = None
+    
+    def to_dict(self):
+        """转为字典便于序列化"""
+        return {
+            'std_id': self.std_id,
+            'reason': self.reason,
+            'error_type': self.error_type,
+            'timestamp': self.timestamp
+        }
 
 
 class BatchDownloadThread(QtCore.QThread):
@@ -929,29 +1028,99 @@ class BatchDownloadThread(QtCore.QThread):
         self.enable_sources = enable_sources
         self.num_workers = num_workers  # 下载worker线程数
         self._stop_requested = False
+        self.failed_items = []  # P1: 结构化存储失败项
 
     def stop(self):
+        """停止批量下载任务"""
         self._stop_requested = True
+        self.log.emit("⏳ 正在请求停止批量下载任务...")
+    
+    def export_failed_to_csv(self, filepath: str) -> bool:
+        """P1: 导出失败项到 CSV 文件"""
+        if not self.failed_items:
+            return False
+        
+        try:
+            import csv
+            with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(['标准号', '失败原因', '错误类型'])
+                for item in self.failed_items:
+                    if isinstance(item, FailedItem):
+                        writer.writerow([item.std_id, item.reason, item.error_type])
+                    else:
+                        # 兼容旧格式（字符串）
+                        writer.writerow([str(item), '未知', 'unknown'])
+            return True
+        except Exception as e:
+            print(f"导出失败: {e}")
+            return False
+    
+    def get_failed_std_ids(self) -> List[str]:
+        """P1: 获取失败的标准号列表，用于重试"""
+        failed_ids = []
+        for item in self.failed_items:
+            if isinstance(item, FailedItem):
+                failed_ids.append(item.std_id)
+            else:
+                # 兼容旧格式
+                failed_ids.append(str(item).split(' ')[0])
+        return failed_ids
 
     def run(self):
         """
-        改造为方案1+3：流水线优化 + 智能重试策略
+        批量下载主流程：流水线优化 + 智能重试策略
         - 搜索和下载并行进行：边搜边下（不等搜索全部完成）
         - 智能重试：区分错误类型，网络错误重试，源不可用跳过
         - 性能提升：15-20% 加速，关键路径优化
         """
+        import time
+        start_time = time.time()
+        
+        # 1. 初始化资源和队列
+        total, failed_list, search_queue, result_queue, download_queue = self._initialize_resources()
+        
+        # 2. 启动搜索和下载 Worker 线程
+        search_workers, download_workers, num_search_workers = self._start_workers(
+            search_queue, result_queue, download_queue
+        )
+        
+        # 3. 执行搜索流水线（并行搜索和收集）
+        search_count, search_fail = self._execute_search_pipeline(
+            search_queue, result_queue, download_queue, search_workers, failed_list
+        )
+        
+        # 4. 执行下载流水线（监控下载进度）
+        total_success, total_fail, worker_stats = self._execute_download_pipeline(
+            download_queue, download_workers, search_count
+        )
+        
+        # 5. 生成并输出最终统计结果
+        total_elapsed = time.time() - start_time
+        self._generate_summary(
+            total, search_count, search_fail, total_success, total_fail, 
+            total_elapsed, worker_stats, failed_list
+        )
+        
+        # 发送完成信号
+        self.finished.emit(total_success, total_fail, failed_list)
+    
+    def _initialize_resources(self):
+        """初始化批量下载所需的资源和队列"""
         total = len(self.std_ids)
         failed_list = []
         
-        # 创建搜索队列和结果队列
+        # 创建队列
         search_queue = queue.Queue()
         result_queue = queue.Queue()
+        download_queue = queue.Queue(maxsize=200)
         
-        # 创建下载队列
-        download_queue = queue.Queue(maxsize=100)
-        
-        # ─────────────── 启动搜索worker线程 ───────────────
-        num_search_workers = 3
+        return total, failed_list, search_queue, result_queue, download_queue
+    
+    def _start_workers(self, search_queue, result_queue, download_queue):
+        """启动搜索和下载 Worker 线程"""
+        # 启动搜索 workers
+        num_search_workers = 5
         search_workers = []
         for i in range(num_search_workers):
             worker = SearchWorker(
@@ -964,12 +1133,18 @@ class BatchDownloadThread(QtCore.QThread):
             worker.start()
             search_workers.append(worker)
         
-        # ─────────────── 启动下载worker线程 ───────────────
-        # 设置下载源优先级: BY > GBW > ZBY
+        # 启动下载 workers
         prefer_order = ["BY", "GBW", "ZBY"]
+        actual_download_workers = max(3, min(self.num_workers, num_search_workers + 2))
+        
+        # P1: 定义失败回调函数，收集详细失败信息
+        def on_download_failed(std_id: str, reason: str, error_type: str):
+            """下载失败时的回调，记录到 failed_items"""
+            failed_item = FailedItem(std_id, reason, error_type)
+            self.failed_items.append(failed_item)
         
         download_workers = []
-        for i in range(self.num_workers):
+        for i in range(actual_download_workers):
             worker = DownloadWorker(
                 download_queue=download_queue,
                 worker_id=i + 1,
@@ -977,24 +1152,27 @@ class BatchDownloadThread(QtCore.QThread):
                 enable_sources=self.enable_sources,
                 log_signal=self.log,
                 progress_signal=None,
-                prefer_order=prefer_order
+                prefer_order=prefer_order,
+                failure_callback=on_download_failed  # P1: 传入失败回调
             )
             worker.start()
             download_workers.append(worker)
         
-        # ─────────────── 流水线：放入搜索任务并实时收集+下载 ───────────────
-        self.log.emit("🚀 [方案1+3] 启动流水线：边搜边下，智能重试")
-        self.log.emit(f"   🔍 搜索线程数: 3   ⬇️  下载线程数: {self.num_workers}")
-        
-        search_count = 0
-        search_fail = 0
-        total_success = 0
-        total_fail = 0
-        processed = 0
-        
-        # 使用线程来并行处理：放入搜索任务 + 收集结果 + 入队下载
+        return search_workers, download_workers, num_search_workers
+    
+    def _execute_search_pipeline(self, search_queue, result_queue, download_queue, 
+                                 search_workers, failed_list):
+        """执行搜索流水线：并行搜索和收集结果"""
         import threading
         import time
+        
+        self.log.emit("🚀 [方案1+3] 启动流水线：边搜边下，智能重试")
+        self.log.emit(f"   🔍 搜索线程数: {len(search_workers)}   ⬇️  下载线程数: {self.num_workers}")
+        
+        total = len(self.std_ids)
+        num_search_workers = len(search_workers)
+        search_count = 0
+        search_fail = 0
         
         # 线程1：持续放入搜索任务
         def enqueue_searches():
@@ -1003,12 +1181,12 @@ class BatchDownloadThread(QtCore.QThread):
                     self.log.emit("🛑 用户取消了批量下载任务")
                     break
 
-                # 清理标准号
                 std_id = std_id.strip().replace('\xa0', ' ').replace('\u3000', ' ')
                 if not std_id:
                     continue
 
-                self.progress.emit(idx, total, f"[入队] ({idx}/{total}): {std_id}")
+                if idx <= 5 or idx % 10 == 0:
+                    self.progress.emit(idx, total, f"[入队] ({idx}/{total}): {std_id}")
                 
                 try:
                     search_queue.put((std_id, idx), timeout=5)
@@ -1016,32 +1194,49 @@ class BatchDownloadThread(QtCore.QThread):
                     self.log.emit(f"⚠️ 搜索队列已满，等待...")
                     search_queue.put((std_id, idx))
             
-            # 通知搜索worker停止
             for _ in range(num_search_workers):
                 search_queue.put(None)
         
-        # 线程2：实时收集结果并入队下载（流水线优化！）
+        # 线程2：实时收集结果并入队下载
         def collect_and_enqueue():
-            nonlocal search_count, search_fail, total_success, total_fail, processed
+            nonlocal search_count, search_fail
             
             remaining = len([s for s in self.std_ids if s.strip()])
             collected = 0
+            start_time = time.time()
+            last_progress_time = start_time
+            current_std_id = ""  # 记录当前处理的标准号
             
+            timeout_count = 0  # 连续超时计数器
+            dynamic_timeout = 30  # 默认超时时间
             while collected < remaining:
                 try:
-                    dynamic_timeout = max(60, remaining * 5)
+                    # 动态超时：基于待处理数，最少30秒，最多60秒
+                    pending = remaining - collected
+                    dynamic_timeout = max(30, min(60, pending * 3))
+                    
                     std_id, idx, results = result_queue.get(timeout=dynamic_timeout)
+                    timeout_count = 0  # 重置超时计数
                     collected += 1
                     processed = collected
+                    current_std_id = std_id  # 更新当前处理的标准号
                     
-                    # 更新进度：搜索进度从 0-50%
+                    # 更新进度：搜索进度从 0-50%，显示当前标准号
                     progress = int(collected / remaining * 50)
-                    self.progress.emit(progress, 100, f"[搜索中] ({collected}/{remaining}): {std_id}")
+                    elapsed = int(time.time() - start_time)
+                    est_total = int(elapsed * remaining / max(1, collected))
+                    eta = est_total - elapsed
+                    
+                    # 改进的进度信息：包含标准号、已耗时、预计总耗时
+                    progress_msg = f"[搜索中] {collected}/{remaining} | 当前: {std_id[:25]} | 耗时: {elapsed}s | 预计: {est_total}s"
+                    self.progress.emit(progress, 100, progress_msg)
                     
                     if not results:
                         self.log.emit(f"❌ [{collected}/{remaining}] 未找到: {std_id}")
                         search_fail += 1
-                        failed_list.append(f"{std_id} (未找到标准)")
+                        # P1: 结构化记录失败项
+                        failed_item = FailedItem(std_id, "未找到标准", "not_found")
+                        failed_list.append(failed_item)
                         result_queue.task_done()
                         continue
                     
@@ -1061,52 +1256,130 @@ class BatchDownloadThread(QtCore.QThread):
                     try:
                         download_queue.put((std_id, best_match), timeout=5)
                     except queue.Full:
-                        self.log.emit(f"   ⚠️ 下载队列已满...")
+                        self.log.emit(f"   ⚠️ 下载队列已满，等待...")
                         download_queue.put((std_id, best_match))
                     
                     result_queue.task_done()
                         
                 except queue.Empty:
-                    self.log.emit(f"⚠️ 搜索超时 ({dynamic_timeout}秒)，已收集 {collected}/{remaining}")
-                    break
+                    timeout_count += 1
+                    elapsed = int(time.time() - start_time)
+                    pending = remaining - collected
+                    
+                    # 第1次超时：打印日志，继续等待
+                    if timeout_count == 1:
+                        self.log.emit(f"⏳ 搜索响应缓慢 - 已收集 {collected}/{remaining}，正在等待搜索结果...")
+                    # 第2次超时：增加日志详度
+                    elif timeout_count == 2:
+                        self.log.emit(f"⚠️ 搜索响应非常缓慢 ({dynamic_timeout}s超时)，已收集 {collected}/{remaining} | 耗时 {elapsed}s")
+                        self.log.emit(f"   可能原因：网络延迟、API限速、或大量搜索结果需要处理")
+                    # 第3次超时：检查是否应该放弃
+                    elif timeout_count >= 3:
+                        # 检查搜索workers是否还活跃
+                        active_searchers = sum(1 for w in search_workers if w.is_alive())
+                        if active_searchers == 0:
+                            self.log.emit(f"ℹ️ 所有搜索线程已完成，但还有 {pending} 个结果未收集，请继续等待...")
+                            # 再等一次，给搜索结果一个机会
+                            if timeout_count == 4:
+                                self.log.emit(f"❌ 搜索结果队列为空，放弃等待剩余 {pending} 个结果")
+                                break
+                        else:
+                            self.log.emit(f"⏳ 还有 {active_searchers} 个搜索线程在工作，待收集 {pending} 个结果，继续等待...")
+                    
+                    # 继续等待而不是直接break
+                    time.sleep(1)
+                    
                 except Exception as e:
                     self.log.emit(f"❌ 收集结果出错: {str(e)[:80]}")
         
-        # 并行运行两个线程
+        # 并行运行搜索和收集线程
         enqueue_thread = threading.Thread(target=enqueue_searches, daemon=True)
         collect_thread = threading.Thread(target=collect_and_enqueue, daemon=True)
         
         enqueue_thread.start()
         collect_thread.start()
-        
-        # 等待搜索线程完成
         enqueue_thread.join()
         collect_thread.join()
         
-        # ─────────────── 等待下载完成 ───────────────
+        return search_count, search_fail
+    
+    def _execute_download_pipeline(self, download_queue, download_workers, search_count):
+        """执行下载流水线：监控下载进度直到完成"""
+        import time
+        
         self.log.emit(f"──────────────────────────────────────")
         self.log.emit(f"🔍 搜索阶段完成！共找到 {search_count} 个标准")
         self.log.emit(f"⏳ 正在下载 {search_count} 个文件（{self.num_workers} 线程并发）...")
         
-        # 通知下载worker停止
+        # 通知下载 workers 停止
         for _ in range(self.num_workers):
             download_queue.put(None)
         
-        # 等待所有下载worker完成，并实时更新进度
-        start_time = time.time()
+        # 监控下载进度
+        download_start_time = time.time()
+        last_downloaded_count = 0
+        download_no_progress_count = 0
+        
         while any(w.is_alive() for w in download_workers):
             current_downloaded = sum(w.success_count + w.fail_count for w in download_workers)
             download_total = search_count
             
+            # 检测是否卡住（30秒内无进度）
+            if current_downloaded == last_downloaded_count:
+                download_no_progress_count += 1
+            else:
+                download_no_progress_count = 0
+                last_downloaded_count = current_downloaded
+            
             if download_total > 0:
                 download_progress = int(50 + (current_downloaded / max(1, download_total) * 50))
-                msg = f"[下载中] ({current_downloaded}/{download_total}) - "
-                msg += "█" * (current_downloaded % 10) + "░" * (10 - (current_downloaded % 10))
+                elapsed_download = int(time.time() - download_start_time)
+                
+                # 计算下载速度和ETA
+                if elapsed_download > 0:
+                    download_speed = current_downloaded / elapsed_download
+                    remaining_downloads = download_total - current_downloaded
+                    eta_download = int(remaining_downloads / max(0.1, download_speed))
+                else:
+                    eta_download = 0
+                
+                # 显示每个worker的状态：包含当前标准号
+                worker_details = []
+                stuck_workers = []
+                for w in download_workers:
+                    std_info = f"{w.current_std_no[:15]}" if w.current_std_no else "空闲"
+                    worker_details.append(f"W{w.worker_id}:{std_info}({w.success_count}✅/{w.fail_count}❌)")
+                    # 检测卡住的worker（30秒无进度且在处理任务）
+                    if download_no_progress_count >= 60 and w.current_std_no and elapsed_download > 30:
+                        stuck_workers.append(f"Worker-{w.worker_id}: {w.current_std_no}")
+                
+                worker_status = " | ".join(worker_details)
+                
+                msg = f"[下载中] {current_downloaded}/{download_total} | {elapsed_download}s | 预计{eta_download}s | {worker_status}"
                 self.progress.emit(download_progress, 100, msg)
+                
+                # 检测卡住情况并诊断
+                if download_no_progress_count == 30:
+                    self.log.emit(f"⚠️ 检测到下载进度停顿 (30秒无新完成)")
+                    self.log.emit(f"   当前进度: {current_downloaded}/{download_total}")
+                    self.log.emit(f"   活跃Worker: {sum(1 for w in download_workers if w.is_alive())}/{len(download_workers)}")
+                    for w in download_workers:
+                        if w.current_std_no:
+                            self.log.emit(f"   Worker-{w.worker_id} 正在处理: {w.current_std_no}")
+                
+                if download_no_progress_count == 60:
+                    self.log.emit(f"❌ 下载可能已卡住 (60秒无新完成)")
+                    if stuck_workers:
+                        self.log.emit(f"   卡住的Worker任务:")
+                        for task in stuck_workers:
+                            self.log.emit(f"     • {task}")
+                    self.log.emit(f"   建议：检查网络连接或对应下载源是否可用")
             
             time.sleep(0.5)
         
-        # 最后等待所有worker完全结束
+        # 等待所有 worker 完全结束并收集统计
+        total_success = 0
+        total_fail = 0
         worker_stats = []
         for worker in download_workers:
             worker.join()
@@ -1114,31 +1387,55 @@ class BatchDownloadThread(QtCore.QThread):
             total_fail += worker.fail_count
             worker_stats.append((worker.worker_id, worker.success_count, worker.fail_count))
         
-        elapsed = time.time() - start_time
-        self.progress.emit(100, 100, f"[完成] 耗时: {elapsed:.1f}秒")
+        return total_success, total_fail, worker_stats
+    
+    def _generate_summary(self, total, search_count, search_fail, total_success, 
+                         total_fail, total_elapsed, worker_stats, failed_list):
+        """生成并输出批量下载的最终统计结果"""
+        self.progress.emit(100, 100, f"[完成] 耗时: {total_elapsed:.1f}秒")
         
-        # ─────────────── 汇总结果 ───────────────
         self.log.emit(f"──────────────────────────────────────")
         self.log.emit(f"📊 📊 📊 批量下载完成统计 📊 📊 📊")
         self.log.emit(f"──────────────────────────────────────")
         self.log.emit(f"🔍 搜索阶段: {search_count}/{total} 成功，{search_fail} 失败")
         self.log.emit(f"⬇️  下载阶段: {total_success} 成功，{total_fail} 失败")
         self.log.emit(f"📈 总成功率: {total_success/(max(1, total_success+total_fail))*100:.1f}%")
-        self.log.emit(f"⏱️  总耗时: {elapsed:.1f}秒")
+        self.log.emit(f"⏱️  总耗时: {total_elapsed:.1f}秒")
         self.log.emit(f"👷 Worker详情:")
         for worker_id, success, fail in worker_stats:
             rate = success / max(1, success + fail) * 100
             self.log.emit(f"   Worker-{worker_id}: ✅ {success} | ❌ {fail} ({rate:.0f}%)")
         
+        # P1: 显示结构化的失败信息
         if failed_list:
-            self.log.emit(f"📋 失败的标准:")
-            for item in failed_list[:10]:  # 只显示前10个
-                self.log.emit(f"   • {item}")
+            self.log.emit(f"📋 失败的标准 (前10个):")
+            for item in failed_list[:10]:
+                # 兼容旧的字符串格式和新的 FailedItem 对象
+                if isinstance(item, FailedItem):
+                    self.log.emit(f"   • {item.std_id} - {item.reason} [{item.error_type}]")
+                else:
+                    self.log.emit(f"   • {item}")
             if len(failed_list) > 10:
                 self.log.emit(f"   ... 还有 {len(failed_list) - 10} 个失败")
+            
+            # P1: 按错误类型统计
+            if self.failed_items:
+                error_counts = {}
+                for item in self.failed_items:
+                    error_counts[item.error_type] = error_counts.get(item.error_type, 0) + 1
+                
+                self.log.emit(f"📊 失败原因统计:")
+                for error_type, count in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
+                    type_name = {
+                        "network": "网络错误",
+                        "not_found": "源不可用/标准不存在",
+                        "no_standard": "无此标准",
+                        "corrupted": "文件损坏",
+                        "unknown": "未知错误"
+                    }.get(error_type, error_type)
+                    self.log.emit(f"   • {type_name}: {count} 个")
         
         self.log.emit(f"──────────────────────────────────────")
-        self.finished.emit(total_success, total_fail, failed_list)
 
 
 
@@ -1309,7 +1606,7 @@ class StandardTableModel(QtCore.QAbstractTableModel):
         super().__init__(parent)
         self._items: List[dict] = []
         # 调整列顺序：来源放到状态后面，文本前面
-        self._headers = ["选中", "序号", "标准号", "名称", "发布日期", "实施日期", "状态", "来源", "文本"]
+        self._headers = ["选中", "序号", "标准号", "名称", "发布日期", "实施日期", "状态", "替代标准", "来源", "文本"]
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._items)
@@ -1338,22 +1635,42 @@ class StandardTableModel(QtCore.QAbstractTableModel):
             if c == 6:
                 return item.get("status", "")
             if c == 7:
+                return item.get("replace_std", "")
+            if c == 8:
                 # 显示来源（优先使用合并后的 _display_source）
                 disp = item.get('_display_source') or (item.get('sources')[0] if item.get('sources') else None)
                 return disp or ""
-            if c == 8:
+            if c == 9:
                 return "✓" if item.get("has_pdf") else "-"
-        # 背景色：选中项用蓝色，未选中用白色
+        
+        # 背景色：根据不同条件设置颜色
         if role == QtCore.Qt.BackgroundRole:
             if c == 0 and item.get("_selected"):
                 return QtGui.QBrush(QtGui.QColor("#3498db"))
+            # 状态列的颜色指示：现行=绿色，废止=红色，其他=白色
+            elif c == 6:
+                status = item.get("status", "").lower()
+                if "现行" in status or "active" in status or "有效" in status:
+                    return QtGui.QBrush(QtGui.QColor("#d4edda"))  # 浅绿色
+                elif "废止" in status or "supersede" in status or "canceled" in status or "abrogated" in status:
+                    return QtGui.QBrush(QtGui.QColor("#f8d7da"))  # 浅红色
+                else:
+                    return QtGui.QBrush(QtGui.QColor("#ffffff"))
             else:
                 return QtGui.QBrush(QtGui.QColor("#ffffff"))
         
-        # 文字色：选中项用白色，未选中用黑色
+        # 文字色：选中项用白色，未选中用黑色或适应背景的颜色
         if role == QtCore.Qt.ForegroundRole:
             if c == 0 and item.get("_selected"):
                 return QtGui.QBrush(QtGui.QColor("#ffffff"))
+            elif c == 6:
+                status = item.get("status", "").lower()
+                if "现行" in status or "active" in status or "有效" in status:
+                    return QtGui.QBrush(QtGui.QColor("#155724"))  # 深绿色文字
+                elif "废止" in status or "supersede" in status or "canceled" in status or "abrogated" in status:
+                    return QtGui.QBrush(QtGui.QColor("#721c24"))  # 深红色文字
+                else:
+                    return QtGui.QBrush(QtGui.QColor("#333333"))
             else:
                 return QtGui.QBrush(QtGui.QColor("#333333"))  # 黑色文字
         
@@ -2003,7 +2320,7 @@ class MainWindow(QtWidgets.QMainWindow):
         path_op_layout.addWidget(lbl_path)
         path_op_layout.addWidget(self.lbl_download_path, 1)
         
-        # Web应用按钮 - 改为 Excel 补全
+        # Excel 补全按钮
         self.btn_web_app = QtWidgets.QPushButton("📊 标准补全")
         self.btn_web_app.setMaximumWidth(70)
         self.btn_web_app.setStyleSheet("""
@@ -2025,6 +2342,29 @@ class MainWindow(QtWidgets.QMainWindow):
         """)
         self.btn_web_app.clicked.connect(self.open_excel_dialog)
         path_op_layout.addWidget(self.btn_web_app)
+        
+        # 标准查新按钮
+        self.btn_standard_info = QtWidgets.QPushButton("🔍 标准查新")
+        self.btn_standard_info.setMaximumWidth(70)
+        self.btn_standard_info.setStyleSheet("""
+            QPushButton {
+                background-color: #9b59b6;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 6px 8px;
+                font-weight: bold;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #8e44ad;
+            }
+            QPushButton:pressed {
+                background-color: #7d3c98;
+            }
+        """)
+        self.btn_standard_info.clicked.connect(self.open_standard_info_dialog)
+        path_op_layout.addWidget(self.btn_standard_info)
         
         # 路径选择按钮 - 宽度调小防止遮挡
         self.btn_select_path = QtWidgets.QPushButton("🔍 选路径")
@@ -2962,7 +3302,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 data.append({
                     "标准号": r.get("std_no"),
                     "名称": r.get("name"),
-                    "状态": r.get("status"),
+                    "发布日期": r.get("publish", ""),
+                    "实施日期": r.get("implement", ""),
+                    "状态": r.get("status", ""),
+                    "替代标准": r.get("replace_std", ""),
                     "有文本": "是" if r.get("has_pdf") else "否",
                 })
             df = pd.DataFrame(data)
@@ -3018,6 +3361,17 @@ class MainWindow(QtWidgets.QMainWindow):
         from app.excel_dialog import ExcelDialog
         
         dialog = ExcelDialog(self)
+        # 兼容 PySide2 和 PySide6
+        if hasattr(dialog, 'exec'):
+            dialog.exec()
+        else:
+            dialog.exec_()
+    
+    def open_standard_info_dialog(self):
+        """打开标准查新对话框"""
+        from app.standard_info_dialog import StandardInfoDialog
+        
+        dialog = StandardInfoDialog(self)
         # 兼容 PySide2 和 PySide6
         if hasattr(dialog, 'exec'):
             dialog.exec()

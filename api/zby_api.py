@@ -57,6 +57,7 @@ class ZBYSourceAPI(BaseSourceAPI):
                     publish_date=std.publish,
                     implement_date=std.implement,
                     status=std.status,
+                    replace_std=std.replace_std,
                     source_meta=source_meta
                 )
                 response.standards.append(info)

@@ -186,6 +186,10 @@ class ZBYSource:
 
             from .zby_http import search_via_api
             
+            # 提取标准类型前缀（GB/T, QB/T 等）用于精确匹配
+            prefix_match = re.match(r'([A-Z]+/?[A-Z]*)\s*', keyword.upper())
+            expected_prefix = prefix_match.group(1).replace('/', '').replace(' ', '') if prefix_match else ''
+            
             # 尝试多种关键词组合（渐进式）
             keywords_to_try = [keyword]
             # 1. 去掉斜杠和空格
@@ -194,10 +198,12 @@ class ZBYSource:
             # 2. 去掉年份 (GB/T 1234-2024 -> GB/T 1234)
             if '-' in keyword:
                 keywords_to_try.append(keyword.split('-')[0].strip())
-            # 3. 仅保留数字 (GB/T 1234 -> 1234)
-            num_match = re.search(r'(\d+)', keyword)
-            if num_match:
-                keywords_to_try.append(num_match.group(1))
+            # 3. 仅保留数字 (GB/T 1234 -> 1234) - 仅当输入是GB标准时才使用
+            # 避免 QB/T 1950 被搜索成纯数字 1950 导致误匹配 GB 1950
+            if expected_prefix.startswith('GB') or expected_prefix.startswith('GJB'):
+                num_match = re.search(r'(\d+)', keyword)
+                if num_match:
+                    keywords_to_try.append(num_match.group(1))
             
             print(f"[ZBY DEBUG] 尝试搜索关键词: {keywords_to_try}")
             
@@ -211,12 +217,22 @@ class ZBYSource:
                     rows = search_via_api(kw, page=page, page_size=page_size, session=session, timeout=8)
                     print(f"[ZBY DEBUG] 关键词 '{kw}' 返回 {len(rows)} 条原始结果")
                     if rows:
-                        # 过滤结果，确保标准号匹配（模糊匹配）
+                        # 过滤结果，确保标准类型和编号都匹配
                         filtered_rows = []
                         clean_keyword = re.sub(r'[^A-Z0-9]', '', keyword.upper())
-                        print(f"[ZBY DEBUG] 清理后的关键词: '{clean_keyword}'")
+                        print(f"[ZBY DEBUG] 清理后的关键词: '{clean_keyword}', 期望前缀: '{expected_prefix}'")
                         for r in rows:
                             r_no = re.sub(r'[^A-Z0-9]', '', (r.get('standardNumDeal') or '').upper())
+                            # 提取结果的标准类型前缀
+                            r_prefix_match = re.match(r'([A-Z]+)', r_no)
+                            r_prefix = r_prefix_match.group(1) if r_prefix_match else ''
+                            
+                            # 严格匹配：标准类型必须一致
+                            if expected_prefix and r_prefix:
+                                if not r_prefix.startswith(expected_prefix):
+                                    continue  # 标准类型不匹配，跳过
+                            
+                            # 标准号匹配（模糊匹配）
                             if clean_keyword in r_no or r_no in clean_keyword:
                                 filtered_rows.append(r)
                         print(f"[ZBY DEBUG] 过滤后剩余 {len(filtered_rows)} 条结果")
@@ -241,14 +257,44 @@ class ZBYSource:
                         
                         # hasPdf 为 0 并不代表不能下载，可能可以预览
                         has_pdf = bool(int(row.get('hasPdf', 0))) if row.get('hasPdf') is not None else False
-                        # standardStatus 可能为数字或字符串，若无映射文件则直接保留原值或空
+                        
+                        # standardStatus 状态码映射
                         status_code = row.get('standardStatus')
-                        status = str(status_code) if status_code is not None else ''
+                        status_map = {
+                            '0': '即将实施',
+                            '1': '现行',
+                            '2': '废止',
+                            '3': '有更新版本',
+                            '4': '现行',  # 4也表示现行
+                            0: '即将实施',
+                            1: '现行',
+                            2: '废止',
+                            3: '有更新版本',
+                            4: '现行',
+                        }
+                        status = status_map.get(status_code, str(status_code) if status_code is not None else '')
+                        
+                        # 提取替代标准信息
+                        replace_std = ''
+                        # 尝试从各种可能的字段中提取替代标准
+                        for key in ['standardReplaceStandard', 'replaceStandard', 'standardReplace', 'replaceBy', 'replacedBy', 'instead', 'supersede']:
+                            if key in row and row[key]:
+                                replace_std = str(row[key]).strip()
+                                break
+                        
+                        # 如果 API 没有返回替代标准，尝试从补充数据库查询
+                        if not replace_std:
+                            try:
+                                from core.replacement_db import get_replacement_standard
+                                replace_std = get_replacement_standard(std_no)
+                            except:
+                                pass
+                        
                         meta = row
                         # Normalize publish/implement fields from possible API keys
                         pub = (row.get('standardPubTime') or row.get('publish') or '')
                         impl = (row.get('standardUsefulDate') or row.get('standardUsefulTime') or row.get('standardUseDate') or row.get('implement') or '')
-                        items.append(Standard(std_no=std_no, name=name, publish=str(pub)[:10], implement=str(impl)[:10], status=status, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
+                        items.append(Standard(std_no=std_no, name=name, publish=str(pub)[:10], implement=str(impl)[:10], status=status, replace_std=replace_std, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
                     except Exception as e:
                         print(f"[ZBY DEBUG] 转换失败: {e}")
                         pass

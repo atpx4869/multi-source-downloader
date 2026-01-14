@@ -50,6 +50,7 @@ class Standard:
     publish: str = ""
     implement: str = ""
     status: str = ""
+    replace_std: str = ""  # 替代标准号
     has_pdf: bool = False
     source_meta: Dict = field(default_factory=dict)
     sources: List[str] = field(default_factory=list)

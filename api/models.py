@@ -33,6 +33,7 @@ class StandardInfo:
     publish_date: Optional[str] = None           # 发布日期
     implement_date: Optional[str] = None         # 实施日期
     status: Optional[str] = None                 # 状态 (现行/废止)
+    replace_std: Optional[str] = None            # 替代标准号
     source_meta: Dict[str, Any] = field(default_factory=dict)  # 源特定的元数据
     
     def to_dict(self) -> Dict:

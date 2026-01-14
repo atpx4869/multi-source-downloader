@@ -58,9 +58,14 @@ class DownloadTask:
     def from_dict(cls, data: Dict) -> 'DownloadTask':
         """从字典创建"""
         # 处理字段名不匹配：数据库使用 'id'，dataclass 使用 'task_id'
-        if 'id' in data and 'task_id' not in data:
-            data = dict(data)  # 创建副本避免修改原始数据
-            data['task_id'] = data.pop('id')
+        data = dict(data)  # 创建副本避免修改原始数据
+        
+        # 如果有 'id' 字段，将其映射到 'task_id'
+        if 'id' in data:
+            if 'task_id' not in data:
+                data['task_id'] = data['id']
+            data.pop('id')  # 删除 'id' 字段，避免传递给 __init__
+        
         return cls(**data)
 
 
