@@ -72,7 +72,7 @@ jobs:
         Write-Host "Starting Nuitka compilation for Win10+..." -ForegroundColor Cyan
         Write-Host "Python 3.11 + PySide6" -ForegroundColor Cyan
         python -m nuitka --onefile `
-          --windows-console-mode=disable `
+          --disable-console `
           --enable-plugin=pyside6 `
           --windows-icon-from-ico=app.ico `
           --include-data-file=core/logo.png=core/logo.png `
@@ -237,7 +237,7 @@ jobs:
         Write-Host "Starting Nuitka compilation for Win7..." -ForegroundColor Cyan
         Write-Host "Python 3.8 + PySide2" -ForegroundColor Cyan
         python -m nuitka --onefile `
-          --windows-console-mode=disable `
+          --disable-console `
           --enable-plugin=pyside2 `
           --windows-icon-from-ico=app.ico `
           --include-data-file=core/logo.png=core/logo.png `
