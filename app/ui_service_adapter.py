@@ -27,7 +27,10 @@ except ImportError:
         except ImportError:
             raise ImportError("需要安装 PyQt5 或 PySide6 或 PySide2")
 
-from core import DownloadService, SearchService, TaskEvent, TaskStatus
+from core import (
+    DownloadService, SearchService, TaskEvent, TaskStatus,
+    DownloadTask, SearchTask
+)
 from core.models import Standard
 
 
