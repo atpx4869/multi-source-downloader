@@ -387,9 +387,8 @@ class AggregatedDownloader:
             pdf_hint = "有PDF" if src_has_pdf else "无PDF标记"
             emit(f"{src.name}: 开始尝试 ({pdf_hint})")
             
-            # 单个源下载最多允许 20 秒（增加容错，对应网络抖动场景）
-            # 搜索通常 8-10 秒，验证 PDF 可用性 2-3 秒，下载 5-10 秒
-            download_timeout = 20
+            # 根据源类型设置不同的超时：内网源 BY 应该秒级完成，外网源需要更长时间
+            download_timeout = 5 if src.name == "BY" else 20  # BY 内网 5 秒，外网 20 秒
             
             try:
                 path = None
@@ -407,7 +406,7 @@ class AggregatedDownloader:
                     
                     future = executor.submit(_download_from_source)
                     try:
-                        result = future.result(timeout=download_timeout)  # 单个源最多 20 秒
+                        result = future.result(timeout=download_timeout)  # 根据源类型设置超时
                     except concurrent.futures.TimeoutError:
                         emit(f"{src.name}: 超时({download_timeout}秒)，尝试下一个源")
                         continue
