@@ -407,6 +407,16 @@ class AggregatedDownloader:
                         emit(f"{src.name}: 超时(10秒)，尝试下一个源")
                         continue
                 
+                # 处理 DownloadResult 对象（Phase 1 新增）
+                from sources.base import DownloadResult
+                if isinstance(result, DownloadResult):
+                    if result.success and result.file_path:
+                        emit(f"{src.name}: 成功 -> {result.file_path}")
+                        return str(result.file_path), logs + result.logs
+                    else:
+                        emit(f"{src.name}: 失败 -> {result.error}，尝试下一个源")
+                        continue
+                
                 if isinstance(result, tuple):
                     path, extra_logs = result
                 else:
