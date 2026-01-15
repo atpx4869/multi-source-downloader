@@ -28,7 +28,25 @@ class StandardSearchMerger:
         # 明确排除其他标准类型
         if any(prefix in kw_upper for prefix in ['QB/T', 'QBT', 'WB/T', 'WBT', 'HB/T', 'HBT', 'JC/T', 'JCT']):
             return False
-        return bool(_GB_PATTERN.search(keyword))
+        
+        # 检查是否包含 GB/T、GB、GBT 前缀
+        if _GB_PATTERN.search(keyword):
+            return True
+        
+        # 启发式检测：纯数字标准号（如 6675.1）可能是 GB 标准
+        # GB 标准号范围通常在 1-10000 范围内
+        # 这样可以处理用户只输入标准号而不含前缀的情况（如在 UI 搜索框中输入 6675.1-）
+        pure_num_match = re.match(r'^(\d+(?:\.\d+)?)', keyword.strip())
+        if pure_num_match:
+            try:
+                std_num = int(pure_num_match.group(1).split('.')[0])
+                # GB 标准号一般在 1-10000 范围内，可以认为是 GB 标准的可能性很高
+                if 1 <= std_num <= 10000:
+                    return True
+            except (ValueError, IndexError):
+                pass
+        
+        return False
     
     @staticmethod
     def merge_results(zby_results: List[Dict], gbw_results: List[Dict]) -> List[Dict]:

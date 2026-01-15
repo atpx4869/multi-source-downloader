@@ -170,6 +170,7 @@ try:
     from core import AggregatedDownloader
     from core import natural_key
     from core.models import Standard
+    from core.smart_search import StandardSearchMerger
 except Exception:
     AggregatedDownloader = None
     Standard = None
@@ -578,11 +579,11 @@ class BackgroundSearchThread(QtCore.QThread):
                     items = client.search(self.keyword, parallel=config.parallel_search, page=int(self.page), page_size=int(self.page_size))
                     
                     for it in items:
-                        # 标准化 std_no 作为 key
-                        key = _STD_NO_RE.sub("", it.std_no or "").lower()
+                        # 使用完整标准号归一化作为 key（包含年份），确保同一标准号只出现一次
+                        key = StandardSearchMerger._normalize_std_no(it.std_no or "")
                         if key not in cache:
                             cache[key] = {}
-                        
+
                         # 按源存储 Standard 对象，便于后续精确合并与优先级判断
                         s_name = it.sources[0] if it.sources else src_name
                         cache[key][s_name] = it
@@ -1605,8 +1606,8 @@ class StandardTableModel(QtCore.QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._items: List[dict] = []
-        # 调整列顺序：来源放到状态后面，文本前面
-        self._headers = ["选中", "序号", "标准号", "名称", "发布日期", "实施日期", "状态", "替代标准", "来源", "文本"]
+        # 列顺序：选中、序号、标准号、名称、发布日期、实施日期、状态、来源、文本
+        self._headers = ["选中", "序号", "标准号", "名称", "发布日期", "实施日期", "状态", "来源", "文本"]
 
     def rowCount(self, parent=QtCore.QModelIndex()):
         return len(self._items)
@@ -1635,12 +1636,10 @@ class StandardTableModel(QtCore.QAbstractTableModel):
             if c == 6:
                 return item.get("status", "")
             if c == 7:
-                return item.get("replace_std", "")
-            if c == 8:
                 # 显示来源（优先使用合并后的 _display_source）
                 disp = item.get('_display_source') or (item.get('sources')[0] if item.get('sources') else None)
                 return disp or ""
-            if c == 9:
+            if c == 8:
                 return "✓" if item.get("has_pdf") else "-"
         
         # 背景色：根据不同条件设置颜色
@@ -2682,13 +2681,13 @@ class MainWindow(QtWidgets.QMainWindow):
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
         # 3:名称 - 自动伸缩填充剩余空间
         header.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
-        # 4:来源 - 内容自适应
+        # 4:发布日期 - 内容自适应
         header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
-        # 5:发布日期 - 内容自适应
+        # 5:实施日期 - 内容自适应
         header.setSectionResizeMode(5, QtWidgets.QHeaderView.ResizeToContents)
-        # 6:实施日期 - 内容自适应
+        # 6:状态 - 内容自适应
         header.setSectionResizeMode(6, QtWidgets.QHeaderView.ResizeToContents)
-        # 7:状态 - 内容自适应
+        # 7:来源 - 内容自适应
         header.setSectionResizeMode(7, QtWidgets.QHeaderView.ResizeToContents)
         # 8:文本 - 固定宽度
         header.setSectionResizeMode(8, QtWidgets.QHeaderView.Fixed)
@@ -3679,8 +3678,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.append_log(f"📦 缓存命中，返回 {len(cache_results)} 条记录")
                     self.all_items = cache_results
                     self.current_page = 1
-                    # 对缓存结果也执行智能过滤
-                    self._apply_smart_filter_for_no_year()
+                    # 主界面搜索不进行智能过滤，直接显示缓存结果
+                    # self._apply_smart_filter_for_no_year()
                     self.apply_filter()
                     self.status.showMessage(f"已从缓存加载 {len(self.all_items)} 条结果", 3000)
                     self.progress_bar.hide()
@@ -3719,15 +3718,38 @@ class MainWindow(QtWidgets.QMainWindow):
         if not rows:
             return
 
-        # 添加源标记
+        # 添加源标记：如果是 MERGED（来自流式合并），则从 sources 字段中选择最优源显示
+        # 否则直接使用当前源名称
         for row in rows:
-            row['_display_source'] = source_name
+            if source_name == "MERGED":
+                # 流式搜索已合并，从 sources 中选择最优源显示
+                sources = row.get("sources", [])
+                if sources:
+                    # 按优先级选择：有 PDF 的优先，其次 BY>GBW>ZBY
+                    def score_src(src):
+                        score = 0
+                        if row.get("has_pdf"):
+                            score += 100
+                        if src == "BY":
+                            score += 3
+                        elif src == "GBW":
+                            score += 2
+                        elif src == "ZBY":
+                            score += 1
+                        return score
+                    
+                    best_src = max(sources, key=score_src)
+                    row['_display_source'] = best_src
+                else:
+                    row['_display_source'] = "MERGED"
+            else:
+                row['_display_source'] = source_name
 
-        # 合并到现有结果（去重）
+        # 合并到现有结果（以完整标准号去重，保证同一标准号只显示一条）
         existing_keys = set()
         for item in self.all_items:
             std_no = item.get("std_no", "")
-            key = _STD_NO_RE.sub("", std_no).lower()
+            key = StandardSearchMerger._normalize_std_no(std_no)
             existing_keys.add(key)
 
         new_items = []
@@ -3735,12 +3757,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for row in rows:
             std_no = row.get("std_no", "")
-            key = _STD_NO_RE.sub("", std_no).lower()
+            key = StandardSearchMerger._normalize_std_no(std_no)
 
             if key in existing_keys:
                 # 已存在，更新信息（如果新源更优）
                 for item in self.all_items:
-                    item_key = _STD_NO_RE.sub("", item.get("std_no", "")).lower()
+                    item_key = StandardSearchMerger._normalize_std_no(item.get("std_no", ""))
                     if item_key == key:
                         # 合并源信息
                         old_obj = item.get("obj")
@@ -3897,8 +3919,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_all_search_completed(self):
         """所有源搜索完成"""
-        # 智能过滤：当搜索关键词不带年代号时，只保留现行标准
-        self._apply_smart_filter_for_no_year()
+        # 主界面搜索不进行智能过滤，直接显示所有搜到的结果
+        # self._apply_smart_filter_for_no_year()
         
         self.btn_search.setEnabled(True)
         self.progress_bar.hide()
@@ -4229,6 +4251,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.background_cache:
             self.append_log(f"   ↳ 后台缓存可用: {len(self.background_cache)} 条补充数据")
         
+        # 点击下载时立即清除所有选中状态，防止下次下载时误选
+        if hasattr(self, 'table_model') and self.table_model:
+            self.table_model.set_all_selected(False)
+        else:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item:
+                    item.setCheckState(QtCore.Qt.Unchecked)
+        
         self.btn_download.setEnabled(False)
         
         # 显示进度条
@@ -4240,23 +4271,42 @@ class MainWindow(QtWidgets.QMainWindow):
         config = get_api_config()
         output_dir = self.settings.get("output_dir", "downloads")
 
-        # 下载源选择：由日志上方复选框决定，按 BY > GBW > ZBY 顺序
+        # 下载源选择：由日志上方复选框决定，但始终按优先级 GBW > BY > ZBY 排序
+        # 也就是说最终传入的 prefer_order 是用户勾选的子集，但按 GBW, BY, ZBY 的优先级排列
         prefer_order = []
         by_checked = getattr(self, 'chk_by', None)
         gbw_checked = getattr(self, 'chk_gbw', None)
         zby_checked = getattr(self, 'chk_zby', None)
-        if by_checked and by_checked.isChecked():
-            prefer_order.append("BY")
+        # 固定优先级列表
+        priority = ["GBW", "BY", "ZBY"]
+        # 将用户勾选映射为按优先级排序的子集
+        selected_set = set()
         if gbw_checked and gbw_checked.isChecked():
-            prefer_order.append("GBW")
+            selected_set.add("GBW")
+        if by_checked and by_checked.isChecked():
+            selected_set.add("BY")
         if zby_checked and zby_checked.isChecked():
-            prefer_order.append("ZBY")
+            selected_set.add("ZBY")
+        for p in priority:
+            if p in selected_set:
+                prefer_order.append(p)
         if not prefer_order:
             QtWidgets.QMessageBox.information(self, "提示", "请在日志上方勾选至少一个下载源")
             self.btn_download.setEnabled(True)
             self.progress_bar.hide()
             return
         
+        # 如果已有下载线程正在运行，提示并返回，避免覆盖仍在运行的 QThread 对象
+        if hasattr(self, 'download_thread') and self.download_thread is not None:
+            try:
+                if getattr(self.download_thread, 'isRunning', lambda: False)():
+                    QtWidgets.QMessageBox.information(self, "提示", "已有下载任务正在进行，请等待完成或取消后再启动新的下载。")
+                    self.btn_download.setEnabled(True)
+                    self.progress_bar.hide()
+                    return
+            except Exception:
+                pass
+
         self.download_thread = DownloadThread(
             selected, 
             output_dir=output_dir,
@@ -4281,6 +4331,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_download.setEnabled(True)
         self.progress_bar.hide()
         self.status.showMessage(f"下载完成: {success} 成功, {fail} 失败", 5000)
+        
+        # 清理下载线程引用，确保线程对象在停止后可以安全释放
+        try:
+            if hasattr(self, 'download_thread') and self.download_thread is not None:
+                try:
+                    if getattr(self.download_thread, 'isRunning', lambda: False)():
+                        # 等待短暂时间让线程退出（通常 finished 已触发，线程已停止）
+                        self.download_thread.wait(2000)
+                except Exception:
+                    pass
+                self.download_thread = None
+        except Exception:
+            pass
 
     def add_to_download_queue(self, standards: List):
         """从历史/缓存添加标准到下载队列

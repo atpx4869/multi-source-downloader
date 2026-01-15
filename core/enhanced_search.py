@@ -51,30 +51,19 @@ class EnhancedSmartSearcher:
         
         start_time = time.time()
         
-        # 检测是否是 GB/T 或 GB 标准
+        # 检测是否是 GB/T 或 GB 标准（仅用于记录，不用于决定是否并行查询）
         is_gb_std = StandardSearchMerger.is_gb_standard(keyword)
         metadata['is_gb_standard'] = is_gb_std
-        
-        if is_gb_std:
-            # GB/T 或 GB 标准：尝试 ZBY + GBW 并行搜索
-            results, used_sources, fallback_info = EnhancedSmartSearcher._search_gb_standard(
-                keyword, downloader, output_dir
-            )
-            metadata['sources_used'] = used_sources
-            metadata['primary_source'] = 'ZBY'
-            metadata['fallback_source'] = fallback_info.get('source')
-            metadata['has_fallback'] = fallback_info.get('used', False)
-            metadata['retry_count'] = fallback_info.get('retry_count', 0)
-        else:
-            # 非 GB 标准：优先使用 ZBY，失败时尝试其他源
-            results, used_sources, fallback_info = EnhancedSmartSearcher._search_non_gb_standard(
-                keyword, downloader, output_dir
-            )
-            metadata['sources_used'] = used_sources
-            metadata['primary_source'] = 'ZBY'
-            metadata['fallback_source'] = fallback_info.get('source')
-            metadata['has_fallback'] = fallback_info.get('used', False)
-            metadata['retry_count'] = fallback_info.get('retry_count', 0)
+
+        # 统一并行查询所有主要数据源（GBW, BY, ZBY），由合并逻辑决定最终结果
+        results, used_sources, fallback_info = EnhancedSmartSearcher._search_gb_standard(
+            keyword, downloader, output_dir
+        )
+        metadata['sources_used'] = used_sources
+        metadata['primary_source'] = 'ZBY'
+        metadata['fallback_source'] = fallback_info.get('source')
+        metadata['has_fallback'] = fallback_info.get('used', False)
+        metadata['retry_count'] = fallback_info.get('retry_count', 0)
         
         metadata['elapsed_time'] = time.time() - start_time
         return results, metadata
@@ -110,32 +99,20 @@ class EnhancedSmartSearcher:
         
         start_time = time.time()
         
-        # 检测是否是 GB/T 或 GB 标准
+        # 检测是否是 GB/T 或 GB 标准（仅用于记录，不用于决定是否并行查询）
         is_gb_std = StandardSearchMerger.is_gb_standard(keyword)
         metadata['is_gb_standard'] = is_gb_std
-        
-        if is_gb_std:
-            # GB/T 或 GB 标准：尝试 ZBY + GBW 并行搜索，流式返回
-            used_sources, fallback_info, total = EnhancedSmartSearcher._search_gb_standard_streaming(
-                keyword, downloader, output_dir, on_result
-            )
-            metadata['sources_used'] = used_sources
-            metadata['primary_source'] = 'ZBY'
-            metadata['fallback_source'] = fallback_info.get('source')
-            metadata['has_fallback'] = fallback_info.get('used', False)
-            metadata['retry_count'] = fallback_info.get('retry_count', 0)
-            metadata['total_results'] = total
-        else:
-            # 非 GB 标准：优先使用 ZBY，失败时尝试其他源，流式返回
-            used_sources, fallback_info, total = EnhancedSmartSearcher._search_non_gb_standard_streaming(
-                keyword, downloader, output_dir, on_result
-            )
-            metadata['sources_used'] = used_sources
-            metadata['primary_source'] = 'ZBY'
-            metadata['fallback_source'] = fallback_info.get('source')
-            metadata['has_fallback'] = fallback_info.get('used', False)
-            metadata['retry_count'] = fallback_info.get('retry_count', 0)
-            metadata['total_results'] = total
+
+        # 统一流式并行搜索 GBW、BY、ZBY（谁先返回就先显示），由合并逻辑决定最终展示
+        used_sources, fallback_info, total = EnhancedSmartSearcher._search_gb_standard_streaming(
+            keyword, downloader, output_dir, on_result
+        )
+        metadata['sources_used'] = used_sources
+        metadata['primary_source'] = 'ZBY'
+        metadata['fallback_source'] = fallback_info.get('source')
+        metadata['has_fallback'] = fallback_info.get('used', False)
+        metadata['retry_count'] = fallback_info.get('retry_count', 0)
+        metadata['total_results'] = total
         
         metadata['elapsed_time'] = time.time() - start_time
         return metadata
@@ -144,7 +121,7 @@ class EnhancedSmartSearcher:
     def _search_gb_standard_streaming(keyword: str, downloader, output_dir: str,
                                       on_result: Optional[Callable]) -> Tuple[List[str], Dict, int]:
         """
-        GB/T 标准流式搜索 - 并行搜索 ZBY + GBW，逐条返回结果
+        GB/T 标准流式搜索 - 并行搜索 GBW + BY + ZBY（优先级：GBW > BY > ZBY），逐条返回结果
         
         返回: (sources_used, fallback_info, total_count)
         """
@@ -153,8 +130,6 @@ class EnhancedSmartSearcher:
         fallback_info = {'source': None, 'used': False, 'retry_count': 0}
         sources_used = []
         total_count = 0
-        zby_buffer = []
-        gbw_buffer = []
         seen_keys = set()  # 用于去重
         
         def search_and_stream_source(source_name: str):
@@ -182,15 +157,16 @@ class EnhancedSmartSearcher:
             
             return results
         
-        # 并行搜索 ZBY 和 GBW
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # 并行搜索 GBW、BY、ZBY（GB 标准的优先级：GBW > BY > ZBY）
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(search_and_stream_source, "ZBY"): "ZBY",
                 executor.submit(search_and_stream_source, "GBW"): "GBW",
+                executor.submit(search_and_stream_source, "BY"): "BY",
+                executor.submit(search_and_stream_source, "ZBY"): "ZBY",
             }
             
             # 收集所有结果
-            all_results = {source: [] for source in ["ZBY", "GBW"]}
+            all_results = {source: [] for source in ["GBW", "BY", "ZBY"]}
             
             try:
                 for future in concurrent.futures.as_completed(futures, timeout=EnhancedSmartSearcher.DEFAULT_TIMEOUT * 1.5):
@@ -205,61 +181,37 @@ class EnhancedSmartSearcher:
             except concurrent.futures.TimeoutError:
                 pass
         
-        # 智能合并并流式返回结果
-        if all_results["ZBY"] and all_results["GBW"]:
-            # 两个源都有结果，进行智能合并去重
-            merged_dict = {}
-            
-            # 先加入 ZBY 结果
-            for source_name, result in all_results["ZBY"]:
-                # 使用更精确的去重key：标准号+年份
-                std_no_clean = result["std_no"].replace(" ", "").replace("/", "").upper()
-                key = (std_no_clean, result["name"].lower().strip())
-                if key not in seen_keys:
-                    merged_dict[key] = result
-                    seen_keys.add(key)
-            
-            # 再加入 GBW 结果，重复的进行合并
-            for source_name, result in all_results["GBW"]:
-                std_no_clean = result["std_no"].replace(" ", "").replace("/", "").upper()
-                key = (std_no_clean, result["name"].lower().strip())
-                if key in merged_dict:
-                    # 合并信息：更新来源列表
-                    merged_dict[key]["sources"] = list(set(
-                        merged_dict[key].get("sources", []) + result.get("sources", ["GBW"])
-                    ))
+        # 按优先级进行智能合并（GBW > BY > ZBY），以完整规范化后的标准号为 key
+        merged_map = {}
+
+        for priority_source in ["GBW", "BY", "ZBY"]:
+            for source_name, result in all_results.get(priority_source, []):
+                key = StandardSearchMerger._normalize_std_no(result.get("std_no", ""))
+                if not key:
+                    continue
+
+                if key in merged_map:
+                    # 合并 sources
+                    merged_map[key]["sources"] = list(set(merged_map[key].get("sources", []) + result.get("sources", [priority_source])))
+                    # 合并 has_pdf（任意源有则为 True）
+                    merged_map[key]["has_pdf"] = bool(merged_map[key].get("has_pdf") or result.get("has_pdf"))
+                    # 合并文本字段：优先保留已有值，若为空则使用当前源的值（任何源有文本则显示）
+                    for fld in ("publish", "implement", "status", "replace_std", "name"):
+                        if not merged_map[key].get(fld) and result.get(fld):
+                            merged_map[key][fld] = result.get(fld)
                 else:
-                    merged_dict[key] = result
-                    seen_keys.add(key)
-            
-            # 流式返回合并后的结果
-            merged_results = list(merged_dict.values())
-            if on_result and merged_results:
+                    row = result.copy()
+                    row["sources"] = row.get("sources", [priority_source])
+                    row["has_pdf"] = bool(row.get("has_pdf"))
+                    merged_map[key] = row
+
+        # 流式返回合并后的结果（一次性返回 MERGED 列表以保持行为一致）
+        merged_results = list(merged_map.values())
+        if merged_results:
+            if on_result:
                 on_result("MERGED", merged_results)
             total_count = len(merged_results)
-        
-        elif all_results["ZBY"]:
-            # 仅 ZBY 有结果
-            zby_results = [result for _, result in all_results["ZBY"]]
-            if on_result and zby_results:
-                on_result("ZBY", zby_results)
-            total_count = len(zby_results)
-        
-        elif all_results["GBW"]:
-            # 仅 GBW 有结果（降级）
-            gbw_results = [result for _, result in all_results["GBW"]]
-            if on_result and gbw_results:
-                on_result("GBW", gbw_results)
-            total_count = len(gbw_results)
-            fallback_info = {'source': 'GBW', 'used': True, 'retry_count': 0}
-        
-        else:
-            # 两个都失败，尝试备用方案
-            used_sources_other, fallback_info_other, total_other = EnhancedSmartSearcher._search_with_other_sources_streaming(
-                keyword, downloader, output_dir, on_result
-            )
-            return used_sources_other, fallback_info_other, total_other
-        
+
         return sources_used, fallback_info, total_count
     
     @staticmethod
@@ -390,39 +342,47 @@ class EnhancedSmartSearcher:
             except Exception as e:
                 return source_name, None  # None 表示失败
         
-        # 并行搜索 ZBY 和 GBW
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # 并行搜索 GBW、BY、ZBY（统一并行搜索，保证覆盖所有源）
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(search_source, "ZBY", EnhancedSmartSearcher.DEFAULT_TIMEOUT): "ZBY",
                 executor.submit(search_source, "GBW", EnhancedSmartSearcher.DEFAULT_TIMEOUT): "GBW",
+                executor.submit(search_source, "BY", EnhancedSmartSearcher.DEFAULT_TIMEOUT): "BY",
+                executor.submit(search_source, "ZBY", EnhancedSmartSearcher.DEFAULT_TIMEOUT): "ZBY",
             }
             
+            all_results = {"GBW": [], "BY": [], "ZBY": []}
             for future in concurrent.futures.as_completed(futures, timeout=EnhancedSmartSearcher.DEFAULT_TIMEOUT * 1.5):
                 source_name, results = future.result()
-                
                 if results is not None:
-                    if source_name == "ZBY":
-                        zby_results = results
-                        sources_used.append("ZBY")
-                    elif source_name == "GBW":
-                        gbw_results = results
-                        sources_used.append("GBW")
+                    all_results[source_name] = results
+                    sources_used.append(source_name)
         
-        # 智能合并结果
-        if zby_results and gbw_results:
-            # 两个源都成功，合并结果
-            merged = StandardSearchMerger.merge_results(zby_results, gbw_results)
+        # 智能合并结果：按优先级 GBW > BY > ZBY 合并，保留所有来源信息
+        merged_map = {}
+        for priority in ["GBW", "BY", "ZBY"]:
+            for item in all_results.get(priority, []):
+                key = StandardSearchMerger._normalize_std_no(item.get("std_no", ""))
+                if not key:
+                    continue
+                if key in merged_map:
+                    # 合并 sources
+                    merged_map[key]["sources"] = list(set(merged_map[key].get("sources", []) + item.get("sources", [priority])))
+                    # 合并文本字段：任意源有文本就保留
+                    for fld in ("publish", "implement", "status", "replace_std"):
+                        if not merged_map[key].get(fld) and item.get(fld):
+                            merged_map[key][fld] = item.get(fld)
+                else:
+                    # 复制一份，确保 sources 字段存在
+                    row = item.copy()
+                    row["sources"] = row.get("sources", [priority])
+                    merged_map[key] = row
+
+        if merged_map:
+            merged = list(merged_map.values())
             return merged, sources_used, fallback_info
-        elif zby_results:
-            # 仅 ZBY 成功
-            return zby_results, ["ZBY"], fallback_info
-        elif gbw_results:
-            # 仅 GBW 成功（降级）
-            fallback_info = {'source': 'GBW', 'used': True, 'retry_count': 0}
-            return gbw_results, ["GBW"], fallback_info
-        else:
-            # 两个都失败，尝试备用方案（其他源）
-            return EnhancedSmartSearcher._search_with_other_sources(keyword, downloader, output_dir)
+
+        # 所有源都无结果，尝试兜底方案
+        return EnhancedSmartSearcher._search_with_other_sources(keyword, downloader, output_dir)
     
     @staticmethod
     def _search_non_gb_standard(keyword: str, downloader, output_dir: str) -> Tuple[List[Dict], List[str], Dict]:
