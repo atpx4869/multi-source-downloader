@@ -35,8 +35,8 @@ def search_via_api(keyword: str, page: int = 1, page_size: int = 20, session: Op
         "time": "",
     }
 
-    # 搜索时不重试，快速失败
-    j = call_api(session, 'POST', api_url, json_body=body, headers=headers, timeout=timeout, retries=0, verify_ssl=False)
+    # 搜索时允许 1 次重试（防止网络抖动导致的间歇性失败）
+    j = call_api(session, 'POST', api_url, json_body=body, headers=headers, timeout=timeout, retries=1, verify_ssl=False)
     if j is None:
         print(f"[ZBY HTTP] API返回为空")
         return []

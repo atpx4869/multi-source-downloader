@@ -199,8 +199,8 @@ class GBWSource(BaseSource):
                 "pageNumber": page,
                 "pageSize": page_size
             }
-            # 搜索时不重试：retries=0，快速失败
-            j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=0, verify_ssl=False)
+            # 搜索时允许 1 次重试（快速失败 + 容错）
+            j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=1, verify_ssl=False)
             rows = find_rows(j)
         except Exception:
             pass
@@ -211,7 +211,7 @@ class GBWSource(BaseSource):
                 if '/' in keyword or ' ' in keyword:
                     kw_clean = keyword.replace('/', '').replace(' ', '')
                     params['searchText'] = kw_clean
-                    j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=0, verify_ssl=False)
+                    j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=1, verify_ssl=False)
                     rows = find_rows(j)
             except Exception:
                 pass
@@ -272,8 +272,8 @@ class GBWSource(BaseSource):
                 # 尝试两个可能的详情页域名
                 for base in ["https://std.samr.gov.cn", "https://openstd.samr.gov.cn"]:
                     detail_url = f"{base}/gb/search/gbDetailed?id={item_id}"
-                    # 显式禁用代理
-                    resp = self.session.get(detail_url, timeout=10, proxies={"http": None, "https": None})
+                    # 显式禁用代理，超时提高到 15 秒（防止网络抖动）
+                    resp = self.session.get(detail_url, timeout=15, proxies={"http": None, "https": None}, verify=False)
                     if resp.status_code != 200:
                         continue
                     
@@ -305,7 +305,7 @@ class GBWSource(BaseSource):
 
                 # 如果还是没找到，尝试直接在 openstd 搜索该 ID
                 search_url = f"https://openstd.samr.gov.cn/bzgk/gb/search/gbQueryPage?searchText={item_id}"
-                resp = self.session.get(search_url, timeout=10, proxies={"http": None, "https": None})
+                resp = self.session.get(search_url, timeout=15, proxies={"http": None, "https": None}, verify=False)
                 match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
                 if match:
                     return match.group(1)

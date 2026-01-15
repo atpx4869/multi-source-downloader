@@ -215,8 +215,8 @@ class ZBYSource(BaseSource):
 
             session = requests.Session()
             session.trust_env = False  # 忽略系统代理
-            # 搜索时不重试，快速失败
-            retries = Retry(total=0, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
+            # 搜索时允许 1 次重试，快速失败策略
+            retries = Retry(total=1, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
             adapter = HTTPAdapter(max_retries=retries)
             session.mount('https://', adapter)
             session.mount('http://', adapter)
@@ -369,8 +369,8 @@ class ZBYSource(BaseSource):
 
             session = requests.Session()
             session.trust_env = False  # 忽略系统代理
-            # HTML fallback也不重试，快速失败
-            retries = Retry(total=0, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
+            # HTML fallback 也允许 1 次重试，快速失败
+            retries = Retry(total=1, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
             adapter = HTTPAdapter(max_retries=retries)
             session.mount('https://', adapter)
             session.mount('http://', adapter)
