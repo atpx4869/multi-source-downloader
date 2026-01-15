@@ -2867,15 +2867,11 @@ class MainWindow(QtWidgets.QMainWindow):
         source_header = QtWidgets.QWidget()
         source_hdr_layout = QtWidgets.QHBoxLayout(source_header)
         source_hdr_layout.setContentsMargins(8, 6, 8, 6)
-        source_hdr_layout.setSpacing(6)
+        source_hdr_layout.setSpacing(8)
         
         lbl_select = QtWidgets.QLabel("源选择:")
         lbl_select.setStyleSheet("color: #333; font-weight: bold; font-size: 11px;")
         source_hdr_layout.addWidget(lbl_select)
-        
-        # 设置复选框的最大宽度
-        for chk in [self.chk_gbw, self.chk_by, self.chk_zby]:
-            chk.setMaximumWidth(60)
         
         source_hdr_layout.addWidget(self.chk_gbw)
         source_hdr_layout.addWidget(self.chk_by)
