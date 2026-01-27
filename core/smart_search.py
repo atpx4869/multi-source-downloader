@@ -108,6 +108,10 @@ class StandardSearchMerger:
             if gbw_result:
                 used_gbw_keys.add(zby_key)
                 # 创建合并后的结果（使用 ZBY 为基础）
+                # PDF 可用性判断：优先信任 GBW 的检测结果（更准确）
+                # 只有当 GBW 没有检测到 PDF 时，才考虑 ZBY 的结果
+                has_pdf_merged = gbw_result.has_pdf if gbw_result.has_pdf else zby_result.has_pdf
+
                 merged_result = UnifiedStandard(
                     std_no=zby_result.std_no,
                     name=zby_result.name,
@@ -115,7 +119,7 @@ class StandardSearchMerger:
                     implement_date=zby_result.implement_date or gbw_result.implement_date,
                     status=zby_result.status or gbw_result.status,
                     replace_std=zby_result.replace_std or gbw_result.replace_std,
-                    has_pdf=zby_result.has_pdf or gbw_result.has_pdf,
+                    has_pdf=has_pdf_merged,
                     sources=list(set(zby_result.sources + gbw_result.sources)),
                     source_meta={**zby_result.source_meta, **gbw_result.source_meta}
                 )

@@ -248,18 +248,19 @@ class GBWSource(BaseSource):
                     item_id = row.get("id", "")
                     hcno = row.get("HCNO", "")
                     cache_key = hcno if hcno else item_id
-                    
-                    # 搜索中的快速判定逻辑：
+
+                    # 搜索中的保守判定逻辑（修复乐观假设问题）：
                     # 1. 如果缓存已有结果，使用缓存值
                     # 2. 如果状态不是"现行"或"即将实施"，标记为无文本
-                    # 3. 如果状态OK但缓存未命中，标记为有文本（后续异步验证）
+                    # 3. 如果状态OK但缓存未命中，进行实时检查（避免误报）
                     if cache_key in GBWSource._pdf_check_cache:
                         has_pdf = GBWSource._pdf_check_cache[cache_key]
                     elif not status_ok:
                         has_pdf = False
                     else:
-                        # 状态OK但缓存未命中 -> 标记为有文本，后续异步验证会修正
-                        has_pdf = True
+                        # 状态OK但缓存未命中 -> 进行实时检查（避免乐观假设）
+                        # 这会增加搜索时间，但能避免误报
+                        has_pdf = self._check_pdf_available(item_id, hcno)
 
                     
                     std = Standard(
