@@ -5,7 +5,7 @@ import re
 import time
 import sys
 
-from core.models import Standard, natural_key
+from core.unified_models import Standard, natural_key
 
 # 下载优先级（按源）：BY > GBW > ZBY
 PRIORITY = ["BY", "GBW", "ZBY"]
@@ -154,6 +154,27 @@ class AggregatedDownloader:
         """获取可用的源列表"""
         return [src for src in self.sources if self.health_cache.get(src.name, SourceHealth(src.name)).available]
 
+    def _ensure_unified_standards(self, items: List) -> List[Standard]:
+        """确保所有项目都是统一模型（兼容旧模型）"""
+        unified_items = []
+        for item in items:
+            # 检查是否已经是统一模型
+            if isinstance(item, Standard):
+                # 检查是否有新字段（publish_date）
+                if hasattr(item, 'publish_date'):
+                    unified_items.append(item)
+                else:
+                    # 是旧模型，需要转换
+                    unified_items.append(Standard.from_legacy_standard(item))
+            else:
+                # 不是 Standard 对象，尝试转换
+                try:
+                    unified_items.append(Standard.from_legacy_standard(item))
+                except Exception:
+                    # 转换失败，跳过
+                    pass
+        return unified_items
+
     @staticmethod
     def _norm_std_no(std_no: str) -> str:
         # 统一去掉空白和常见分隔符，避免名称差异造成重复
@@ -237,7 +258,7 @@ class AggregatedDownloader:
 
     def search(self, keyword: str, parallel: bool = True, **kwargs) -> List[Standard]:
         combined: Dict[str, Standard] = {}
-        
+
         if not parallel:
             # 串行搜索（兼容旧版）
             for src in self.sources:
@@ -248,6 +269,8 @@ class AggregatedDownloader:
                 except Exception as exc:
                     print(f"{src.name} 搜索失败：{exc}")
                     continue
+                # 转换旧模型到统一模型（如果需要）
+                items = self._ensure_unified_standards(items)
                 self._merge_items(combined, items, src.name)
         else:
             # 并行搜索（推荐，性能提升 3-5 倍）
@@ -264,6 +287,9 @@ class AggregatedDownloader:
                     except TypeError:
                         items = src.search(keyword)
                     
+                    # 转换旧模型到统一模型（如果需要）
+                    items = self._ensure_unified_standards(items)
+
                     # 线程安全地合并结果
                     with lock:
                         self._merge_items(combined, items, src.name)
