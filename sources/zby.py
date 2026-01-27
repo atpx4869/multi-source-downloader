@@ -12,12 +12,18 @@ import re
 import tempfile
 import shutil
 import os
+import urllib3
+
+# 抑制 urllib3 的 SSL 验证警告（我们故意禁用 SSL 验证以兼容国内网站）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from requests import Response
 
 DEFAULT_BASE_URL = "https://bz.zhenggui.vip"
 
 from core.models import Standard
+from .base import BaseSource, DownloadResult
+from .registry import registry
 
 
 # Prefer local shim; fall back to dotted import for compatibility
@@ -51,9 +57,13 @@ def _mirror_debug_file_static(p: Path) -> None:
         pass
 
 
-class ZBYSource:
-    name = "ZBY"
+@registry.register
+class ZBYSource(BaseSource):
+    source_id = "zby"
+    source_name = "正规标准网"
     priority = 3
+    
+    name = "ZBY"
 
     def __init__(self, output_dir: Union[Path, str] = "downloads") -> None:
         od = Path(output_dir)
@@ -130,9 +140,40 @@ class ZBYSource:
         try:
             if frozen:
                 import requests
-                # 显式禁用代理，避免系统代理干扰
-                r: Response = requests.get(self.base_url, timeout=timeout, proxies={"http": None, "https": None})
-                return 200 <= getattr(r, 'status_code', 0) < 400
+                # 创建 session，禁用代理和 SSL 验证（对于国内站点）
+                session = requests.Session()
+                session.trust_env = False
+                session.proxies = {"http": None, "https": None}
+                
+                # 添加必要的 headers，避免被阻止
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://bz.zhenggui.vip",
+                    "Origin": "https://bz.zhenggui.vip"
+                }
+                
+                # 尝试连接 ZBY 首页，禁用 SSL 验证避免证书问题
+                try:
+                    r: Response = session.get(
+                        self.base_url, 
+                        timeout=timeout, 
+                        headers=headers,
+                        verify=False  # 禁用 SSL 验证（国内站点常见问题）
+                    )
+                    return 200 <= getattr(r, 'status_code', 0) < 400
+                except Exception as e:
+                    # 备用方案：尝试连接 API 端点
+                    try:
+                        api_url = "https://login.bz.zhenggui.vip/bzy-api/org/std/search"
+                        r: Response = session.get(
+                            api_url,
+                            timeout=timeout,
+                            headers=headers,
+                            verify=False
+                        )
+                        return 200 <= getattr(r, 'status_code', 0) < 400
+                    except Exception:
+                        return False
             if self.client is not None and hasattr(self.client, 'is_available'):
                 return bool(self.client.is_available())
             return True
@@ -178,8 +219,8 @@ class ZBYSource:
 
             session = requests.Session()
             session.trust_env = False  # 忽略系统代理
-            # 搜索时不重试，快速失败
-            retries = Retry(total=0, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
+            # 搜索时允许 1 次重试，快速失败策略
+            retries = Retry(total=1, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
             adapter = HTTPAdapter(max_retries=retries)
             session.mount('https://', adapter)
             session.mount('http://', adapter)
@@ -332,8 +373,8 @@ class ZBYSource:
 
             session = requests.Session()
             session.trust_env = False  # 忽略系统代理
-            # HTML fallback也不重试，快速失败
-            retries = Retry(total=0, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
+            # HTML fallback 也允许 1 次重试，快速失败
+            retries = Retry(total=1, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504))
             adapter = HTTPAdapter(max_retries=retries)
             session.mount('https://', adapter)
             session.mount('http://', adapter)
@@ -346,8 +387,8 @@ class ZBYSource:
             resp_text = ""
             for u in urls:
                 try:
-                    # 显式禁用代理，超时8秒
-                    r: Response = session.get(u, params={"searchText": keyword, "q": keyword}, headers=headers, timeout=8, proxies={"http": None, "https": None})
+                    # 显式禁用代理和 SSL 验证，超时8秒
+                    r: Response = session.get(u, params={"searchText": keyword, "q": keyword}, headers=headers, timeout=8, proxies={"http": None, "https": None}, verify=False)
                     if r.status_code == 200 and r.text and len(r.text) > 200:
                         resp_text = r.text
                         break
@@ -375,8 +416,35 @@ class ZBYSource:
         
         return items
 
-    def download(self, item: Standard, outdir: Path, log_cb=None):
-        """下载标准。签名兼容两种调用方式：
+    def download(self, item: Standard, outdir: Path) -> DownloadResult:
+        """按新协议下载标准文档
+        
+        Args:
+            item: Standard 对象
+            outdir: 输出目录
+            
+        Returns:
+            DownloadResult 对象
+        """
+        logs = []
+        try:
+            result = self._download_impl(item, outdir, log_cb=lambda msg: logs.append(msg))
+            if result:
+                if isinstance(result, tuple):
+                    file_path, logged = result
+                    if file_path:
+                        return DownloadResult.ok(Path(file_path) if not isinstance(file_path, Path) else file_path, logs)
+                else:
+                    if result:
+                        return DownloadResult.ok(Path(result) if not isinstance(result, Path) else result, logs)
+            
+            error_msg = logs[-1] if logs else "ZBY: Unknown error"
+            return DownloadResult.fail(error_msg, logs)
+        except Exception as e:
+            return DownloadResult.fail(f"ZBY download exception: {str(e)}", logs)
+    
+    def _download_impl(self, item: Standard, outdir: Path, log_cb=None):
+        """[原实现] 下载标准。签名兼容两种调用方式：
         - download(item, outdir, log_cb=callable)  -> (Path|None, list[str])
         - download(item, outdir) -> Optional[Path]
         返回 (path, logs) 或直接 path/None（兼容旧实现）。

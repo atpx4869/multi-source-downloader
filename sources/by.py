@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import List, Callable, Optional, Dict, Any
 
 from core.models import Standard
+from .base import BaseSource, DownloadResult
+from .registry import registry
 
 
 # BY 内网系统配置
@@ -17,6 +19,7 @@ DEPT_ID = "fc4186fba640402188b91e6bd0d491a6"  # 建材产品检测研究所
 USERNAME = "leiming"  # 雷明
 PASSWORD = "888888"
 TIMEOUT = 10  # 网络请求超时秒
+TIMEOUT_FAST = 3  # 内网高速下载超时秒（内网应该非常快）
 MAX_PAGES = 5  # 每次检索最多抓取的分页数，防止阻塞
 
 
@@ -152,13 +155,15 @@ def _download_standard(session: requests.Session, siid: str, outfile: Path) -> b
     """通过详情页下载标准 PDF"""
     try:
         detail_url = f"{BASE}/Manager/StandManager/StandDetail.aspx?SIId={siid}"
-        detail_resp = session.get(detail_url, timeout=TIMEOUT)
+        # 内网详情页应该立即返回，超时设置为 3 秒
+        detail_resp = session.get(detail_url, timeout=TIMEOUT_FAST)
         detail_resp.raise_for_status()
         pdf_path = _extract_hidden(detail_resp.text, "hidB000")
         pdf_path = pdf_path.lstrip("~")
         download_url = BASE + pdf_path if pdf_path.startswith("/") else f"{BASE}/{pdf_path}"
 
-        with session.get(download_url, stream=True, timeout=TIMEOUT) as resp:
+        # 内网 PDF 下载应该秒级完成，使用较短超时时间
+        with session.get(download_url, stream=True, timeout=TIMEOUT_FAST) as resp:
             resp.raise_for_status()
             with open(outfile, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
@@ -169,12 +174,16 @@ def _download_standard(session: requests.Session, siid: str, outfile: Path) -> b
         return False
 
 
-class BYSource:
+@registry.register
+class BYSource(BaseSource):
     """BY (标院内网) Data Source"""
+    
+    source_id = "by"
+    source_name = "标院内网系统"
+    priority = 2
     
     def __init__(self):
         self.name = "BY"
-        self.priority = 2
         self.session = requests.Session()
         self.session.trust_env = False  # 忽略系统代理
         self.session.headers.update({
@@ -234,8 +243,35 @@ class BYSource:
         
         return items
     
-    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
-        """Download from BY source"""
+    def download(self, item: Standard, outdir: Path) -> DownloadResult:
+        """按新协议下载标准文档
+        
+        Args:
+            item: Standard 对象
+            outdir: 输出目录
+            
+        Returns:
+            DownloadResult 对象
+        """
+        logs = []
+        try:
+            result = self._download_impl(item, outdir, log_cb=lambda msg: logs.append(msg))
+            if result:
+                if isinstance(result, tuple):
+                    file_path, logged = result
+                    if file_path:
+                        return DownloadResult.ok(Path(file_path), logs)
+                else:
+                    if result:
+                        return DownloadResult.ok(Path(result), logs)
+            
+            error_msg = logs[-1] if logs else "BY: Unknown error"
+            return DownloadResult.fail(error_msg, logs)
+        except Exception as e:
+            return DownloadResult.fail(f"BY download exception: {str(e)}", logs)
+    
+    def _download_impl(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
+        """[原实现] Download from BY source"""
         logs = []
         
         def emit(msg: str):
@@ -264,7 +300,8 @@ class BYSource:
             try:
                 path = pdf_path.lstrip("~")
                 url = BASE + path if path.startswith("/") else f"{BASE}/{path}"
-                with self.session.get(url, stream=True, timeout=TIMEOUT) as resp:
+                # 内网下载应该秒级完成，使用较短超时
+                with self.session.get(url, stream=True, timeout=TIMEOUT_FAST) as resp:
                     resp.raise_for_status()
                     with outfile.open("wb") as f:
                         for chunk in resp.iter_content(chunk_size=8192):

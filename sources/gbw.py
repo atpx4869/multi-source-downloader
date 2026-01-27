@@ -4,12 +4,18 @@ GBW Source - 国家标准信息公共服务平台 (std.samr.gov.cn)
 """
 import re
 import requests
+import urllib3
 from pathlib import Path
 from typing import List, Callable
+
+# 抑制 urllib3 的 SSL 验证警告（我们故意禁用 SSL 验证以兼容国内网站）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from core.models import Standard
 from .gbw_download import get_hcno, download_with_ocr, sanitize_filename, prewarm_ocr
 from .http_search import call_api, find_rows
+from .base import BaseSource, DownloadResult
+from .registry import registry
 
 # Pre-compile regex patterns
 _HTML_TAG_RE = re.compile(r'<[^>]+>')
@@ -17,15 +23,20 @@ _WHITESPACE_RE = re.compile(r'\s+')
 _STD_CODE_SLASH_RE = re.compile(r'([A-Z])\s*/\s*([A-Z])')
 
 
-class GBWSource:
+@registry.register
+class GBWSource(BaseSource):
     """GBW (国标委) Data Source"""
+    
+    # 源标识和元数据
+    source_id = "gbw"
+    source_name = "国家标准信息公共服务平台"
+    priority = 1
     
     # 类变量：所有实例共享的PDF检测缓存（避免重复访问详情页）
     _pdf_check_cache = {}  # {item_id: has_pdf}
     
     def __init__(self):
         self.name = "GBW"
-        self.priority = 1
         self.base_url = "https://std.samr.gov.cn"
         self.session = requests.Session()
         self.session.trust_env = False  # 忽略系统代理设置
@@ -192,8 +203,8 @@ class GBWSource:
                 "pageNumber": page,
                 "pageSize": page_size
             }
-            # 搜索时不重试：retries=0，快速失败
-            j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=0)
+            # 搜索时允许 1 次重试（快速失败 + 容错）
+            j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=1, verify_ssl=False)
             rows = find_rows(j)
         except Exception:
             pass
@@ -204,7 +215,7 @@ class GBWSource:
                 if '/' in keyword or ' ' in keyword:
                     kw_clean = keyword.replace('/', '').replace(' ', '')
                     params['searchText'] = kw_clean
-                    j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=0)
+                    j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=1, verify_ssl=False)
                     rows = find_rows(j)
             except Exception:
                 pass
@@ -265,8 +276,8 @@ class GBWSource:
                 # 尝试两个可能的详情页域名
                 for base in ["https://std.samr.gov.cn", "https://openstd.samr.gov.cn"]:
                     detail_url = f"{base}/gb/search/gbDetailed?id={item_id}"
-                    # 显式禁用代理
-                    resp = self.session.get(detail_url, timeout=10, proxies={"http": None, "https": None})
+                    # 显式禁用代理，超时提高到 15 秒（防止网络抖动）
+                    resp = self.session.get(detail_url, timeout=15, proxies={"http": None, "https": None}, verify=False)
                     if resp.status_code != 200:
                         continue
                     
@@ -298,7 +309,7 @@ class GBWSource:
 
                 # 如果还是没找到，尝试直接在 openstd 搜索该 ID
                 search_url = f"https://openstd.samr.gov.cn/bzgk/gb/search/gbQueryPage?searchText={item_id}"
-                resp = self.session.get(search_url, timeout=10, proxies={"http": None, "https": None})
+                resp = self.session.get(search_url, timeout=15, proxies={"http": None, "https": None}, verify=False)
                 match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
                 if match:
                     return match.group(1)
@@ -310,8 +321,37 @@ class GBWSource:
                     print(f"GBW _get_hcno error: {e}")
         return ""
     
-    def download(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
-        """Download PDF from GBW - requires browser automation for captcha"""
+    def download(self, item: Standard, outdir: Path) -> DownloadResult:
+        """按新协议下载标准文档
+        
+        Args:
+            item: Standard 对象
+            outdir: 输出目录
+            
+        Returns:
+            DownloadResult 对象
+        """
+        # 适配旧实现
+        logs = []
+        try:
+            result = self._download_impl(item, outdir, log_cb=lambda msg: logs.append(msg))
+            if result:
+                if isinstance(result, tuple):
+                    file_path, logged = result
+                    if file_path:
+                        return DownloadResult.ok(Path(file_path), logs)
+                else:
+                    # 兼容直接返回路径的情况
+                    if result:
+                        return DownloadResult.ok(Path(result), logs)
+            
+            error_msg = logs[-1] if logs else "Unknown error"
+            return DownloadResult.fail(error_msg, logs)
+        except Exception as e:
+            return DownloadResult.fail(f"GBW download exception: {str(e)}", logs)
+    
+    def _download_impl(self, item: Standard, output_dir: Path, log_cb: Callable[[str], None] = None) -> tuple:
+        """[原实现] Download PDF from GBW - requires browser automation for captcha"""
         logs = []
 
         def emit(msg: str):
@@ -557,7 +597,7 @@ class GBWSource:
         """检查 GBW 服务是否可访问（用于快速健康检测）"""
         try:
             test_url = f"{self.base_url}/gb/search/gbQueryPage?searchText=test&pageNum=1&pageSize=1"
-            resp = self.session.get(test_url, timeout=timeout)
+            resp = self.session.get(test_url, timeout=timeout, verify=False)  # 禁用 SSL 验证
             return 200 <= getattr(resp, 'status_code', 0) < 400
         except Exception:
             return False

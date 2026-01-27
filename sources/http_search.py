@@ -3,6 +3,10 @@ import requests
 import logging
 import time
 import json
+import urllib3
+
+# 抑制 urllib3 的 SSL 验证警告（我们故意禁用 SSL 验证以兼容国内网站）
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _LOGGER = logging.getLogger(__name__)
 # Simple in-memory cache keyed by (method,url,params,json) -> response JSON
@@ -22,7 +26,7 @@ def _cache_key(method: str, url: str, params: Optional[Dict[str, Any]], json_bod
 
 def call_api(session: Optional[requests.Session], method: str, url: str, *, params: Optional[Dict[str, Any]] = None,
              json_body: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None,
-             timeout: int = 10, retries: int = 2, backoff: float = 0.3, use_cache: bool = False) -> Optional[Any]:
+             timeout: int = 10, retries: int = 2, backoff: float = 0.3, use_cache: bool = False, verify_ssl: bool = False) -> Optional[Any]:
     """Call an HTTP API and return parsed JSON or None on failure.
 
     Adds retry with exponential backoff and a very small simple cache when `use_cache` is True.
@@ -55,6 +59,7 @@ def call_api(session: Optional[requests.Session], method: str, url: str, *, para
             if json_body is not None and method.upper() != 'GET':
                 kwargs['json'] = json_body
             kwargs['timeout'] = timeout
+            kwargs['verify'] = verify_ssl  # 添加 SSL 验证控制参数（国内站点可能需要禁用）
 
             _LOGGER.debug('http_search calling %s %s attempt=%d kwargs_keys=%s', method, url, attempt, list(kwargs.keys()))
             # 禁用系统代理：优先使用 Session.trust_env=False。

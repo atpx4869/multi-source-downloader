@@ -412,11 +412,15 @@ class AggregatedDownloader:
             src_has_pdf = src_meta.get("_has_pdf", False) if isinstance(src_meta, dict) else False
             pdf_hint = "有PDF" if src_has_pdf else "无PDF标记"
             emit(f"{src.name}: 开始尝试 ({pdf_hint})")
+            
+            # 根据源类型设置不同的超时：内网源 BY 应该秒级完成，外网源需要更长时间
+            download_timeout = 5 if src.name == "BY" else 20  # BY 内网 5 秒，外网 20 秒
+            
             try:
                 path = None
                 extra_logs: list[str] = []
                 
-                # 单个源超时保护：每个源最多10秒（防止一个源卡住拖累整体）
+                # 单个源超时保护
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     def _download_from_source():
@@ -428,9 +432,19 @@ class AggregatedDownloader:
                     
                     future = executor.submit(_download_from_source)
                     try:
-                        result = future.result(timeout=10)  # 单个源最多10秒
+                        result = future.result(timeout=download_timeout)  # 根据源类型设置超时
                     except concurrent.futures.TimeoutError:
-                        emit(f"{src.name}: 超时(10秒)，尝试下一个源")
+                        emit(f"{src.name}: 超时({download_timeout}秒)，尝试下一个源")
+                        continue
+                
+                # 处理 DownloadResult 对象（Phase 1 新增）
+                from sources.base import DownloadResult
+                if isinstance(result, DownloadResult):
+                    if result.success and result.file_path:
+                        emit(f"{src.name}: 成功 -> {result.file_path}")
+                        return str(result.file_path), logs + result.logs
+                    else:
+                        emit(f"{src.name}: 失败 -> {result.error}，尝试下一个源")
                         continue
                 
                 if isinstance(result, tuple):
