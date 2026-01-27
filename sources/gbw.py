@@ -251,8 +251,8 @@ class GBWSource(BaseSource):
                     std = Standard(
                         std_no=std_code,
                         name=std_name,
-                        publish=row.get("ISSUE_DATE", ""),
-                        implement=row.get("ACT_DATE", ""),
+                        publish_date=row.get("ISSUE_DATE", ""),
+                        implement_date=row.get("ACT_DATE", ""),
                         status=status,
                         has_pdf=has_pdf,
                         source_meta={

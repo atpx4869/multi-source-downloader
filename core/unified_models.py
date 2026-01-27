@@ -214,20 +214,12 @@ class UnifiedStandard:
             source_meta={source: getattr(info, 'source_meta', {})},
         )
 
-    def to_legacy_standard(self) -> Any:
-        """转换为旧的 core.models.Standard（用于渐进式迁移）"""
-        from core.models import Standard
-        return Standard(
-            std_no=self.std_no,
-            name=self.name,
-            publish=self.publish_date,
-            implement=self.implement_date,
-            status=self.status,
-            replace_std=self.replace_std,
-            has_pdf=self.has_pdf,
-            sources=self.sources,
-            source_meta=self.source_meta,
-        )
+    def to_legacy_standard(self) -> 'UnifiedStandard':
+        """转换为旧的 core.models.Standard（用于渐进式迁移）
+
+        注意：由于已经完成统一，现在直接返回自身
+        """
+        return self
 
     # ==================== 比较和排序 ====================
 

@@ -346,7 +346,7 @@ class ZBYSource(BaseSource):
                         # Normalize publish/implement fields from possible API keys
                         pub = (row.get('standardPubTime') or row.get('publish') or '')
                         # impl 已在状态修正时提取，复用
-                        items.append(Standard(std_no=std_no, name=name, publish=str(pub)[:10], implement=str(impl)[:10], status=status, replace_std=replace_std, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
+                        items.append(Standard(std_no=std_no, name=name, publish_date=str(pub)[:10], implement_date=str(impl)[:10], status=status, replace_std=replace_std, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
                     except Exception as e:
                         print(f"[ZBY DEBUG] 转换失败: {e}")
                         pass
@@ -409,7 +409,7 @@ class ZBYSource(BaseSource):
                 if m:
                     std_no = m.group(1).strip()
                     name = m.group(2).strip()
-                items.append(Standard(std_no=std_no, name=name, publish='', implement='', status='', has_pdf=False, source_meta={"title": title}, sources=['ZBY']))
+                items.append(Standard(std_no=std_no, name=name, publish_date='', implement_date='', status='', has_pdf=False, source_meta={"title": title}, sources=['ZBY']))
             return items[:int(page_size)]
         except Exception:
             pass

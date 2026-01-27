@@ -141,14 +141,14 @@ def test_legacy_conversion():
     print("测试 4: 旧模型转换")
     print("="*70)
 
-    # 模拟旧模型
+    # 模拟旧模型（现在使用新字段名，因为已经统一了）
     from core.models import Standard as LegacyStandard
 
     old_std = LegacyStandard(
         std_no="GB/T 9999-2022",
         name="旧模型测试标准",
-        publish="2022-03-01",
-        implement="2022-09-01",
+        publish_date="2022-03-01",
+        implement_date="2022-09-01",
         status="现行",
         has_pdf=True,
         sources=["GBW"]

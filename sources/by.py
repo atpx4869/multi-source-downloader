@@ -230,8 +230,8 @@ class BYSource(BaseSource):
                 std = Standard(
                     std_no=r.get("std_no", ""),
                     name=r.get("std_name", ""),
-                    publish=r.get("publish", ""),
-                    implement=r.get("implement", ""),
+                    publish_date=r.get("publish", ""),
+                    implement_date=r.get("implement", ""),
                     status=r.get("status", ""),
                     has_pdf=True,  # BY 源检索到的均有正文
                     source_meta=r,
