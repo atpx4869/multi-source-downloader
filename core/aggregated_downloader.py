@@ -350,8 +350,8 @@ class AggregatedDownloader:
         return Standard(
             std_no=item.std_no,
             name=item.name,
-            publish=item.publish,
-            implement=item.implement,
+            publish_date=item.publish_date,
+            implement_date=item.implement_date,
             status=item.status,
             has_pdf=item.has_pdf,
             source_meta=meta,
