@@ -7,6 +7,33 @@ import sys
 
 from core.unified_models import Standard, natural_key
 
+# 导入超时配置
+try:
+    from core.timeout_config import get_timeout, get_parallel_timeout
+except ImportError:
+    # 如果配置文件不存在，使用默认值
+    def get_timeout(source: str, operation: str) -> int:
+        return 10
+    def get_parallel_timeout(operation: str) -> int:
+        return 15
+
+# 导入错误处理
+try:
+    from core.error_handling import (
+        log_error, log_success, log_warning,
+        from_requests_error
+    )
+except ImportError:
+    # 如果错误处理模块不存在，使用简单的日志函数
+    def log_error(error, source, operation):
+        return f"[ERROR] [{source}] [{operation}] {error}"
+    def log_success(source, operation, message, **kwargs):
+        return f"[INFO] [{source}] [{operation}] {message}"
+    def log_warning(source, operation, message, **kwargs):
+        return f"[WARN] [{source}] [{operation}] {message}"
+    def from_requests_error(error, source, operation):
+        return error
+
 # 下载优先级（按源）：BY > GBW > ZBY
 PRIORITY = ["BY", "GBW", "ZBY"]
 
@@ -339,22 +366,42 @@ class AggregatedDownloader:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         logs: list[str] = []
         seen_item: set[str] = set()
-        
+
         # 检查缓存和同名文件处理
         cached_path = self.output_dir / item.filename()
         if cached_path.exists():
             file_size = cached_path.stat().st_size
             if file_size > 0:
-                # 文件存在且大小>0，使用缓存
-                logs.append(f"✅ 缓存命中: {cached_path} (大小: {file_size} bytes)")
-                return str(cached_path), logs
+                # 验证 PDF 文件完整性
+                is_valid_pdf = False
+                try:
+                    with open(cached_path, 'rb') as f:
+                        header = f.read(4)
+                        # 检查 PDF 文件头
+                        if header == b'%PDF':
+                            is_valid_pdf = True
+                            logs.append(f"[OK] 缓存命中: {cached_path.name} (大小: {file_size} bytes)")
+                            return str(cached_path), logs
+                        else:
+                            logs.append(f"[WARN] 检测到损坏的 PDF 文件: {cached_path.name} (文件头: {header})")
+                except Exception as e:
+                    logs.append(f"[WARN] 无法验证缓存文件: {e}")
+
+                # 如果文件损坏，删除后重新下载
+                if not is_valid_pdf:
+                    logs.append(f"[INFO] 删除损坏的缓存文件，准备重新下载")
+                    try:
+                        cached_path.unlink()
+                    except Exception as e:
+                        logs.append(f"[ERROR] 删除旧文件失败: {e}")
             else:
                 # 文件存在但大小为0（可能是下载中断），删除后重新下载
-                logs.append(f"⚠️  检测到不完整文件: {cached_path} (大小: 0 bytes)，删除后重新下载")
+                logs.append(f"[WARN] 检测到空文件: {cached_path.name} (大小: 0 bytes)")
+                logs.append(f"[INFO] 删除空文件，准备重新下载")
                 try:
                     cached_path.unlink()
                 except Exception as e:
-                    logs.append(f"❌ 删除旧文件失败: {e}")
+                    logs.append(f"[ERROR] 删除旧文件失败: {e}")
         
         def filtered_cb(line: str):
             if not isinstance(line, str):
@@ -413,9 +460,9 @@ class AggregatedDownloader:
             pdf_hint = "有PDF" if src_has_pdf else "无PDF标记"
             emit(f"{src.name}: 开始尝试 ({pdf_hint})")
             
-            # 根据源类型设置不同的超时：内网源 BY 应该秒级完成，外网源需要更长时间
-            download_timeout = 5 if src.name == "BY" else 20  # BY 内网 5 秒，外网 20 秒
-            
+            # 根据源类型使用统一的超时配置
+            download_timeout = get_timeout(src.name, "download")
+
             try:
                 path = None
                 extra_logs: list[str] = []
@@ -464,13 +511,35 @@ class AggregatedDownloader:
                     
                     if path_obj.exists():
                         file_size = path_obj.stat().st_size
-                        emit(f"{src.name}: 成功 -> {path} (大小: {file_size} bytes)")
+                        success_msg = log_success(
+                            src.name,
+                            "download",
+                            f"下载成功: {path_obj.name}",
+                            size=file_size
+                        )
+                        emit(success_msg)
                     else:
-                        emit(f"{src.name}: 成功 -> {path}")
+                        emit(log_success(src.name, "download", f"下载成功: {path}"))
                     return str(path), logs
                 else:
-                    emit(f"{src.name}: 未获取到文件，尝试下一个源")
+                    warning_msg = log_warning(src.name, "download", "未获取到文件，尝试下一个源")
+                    emit(warning_msg)
+            except concurrent.futures.TimeoutError:
+                timeout_msg = log_warning(
+                    src.name,
+                    "download",
+                    f"超时 ({download_timeout}秒)，尝试下一个源",
+                    timeout=download_timeout
+                )
+                emit(timeout_msg)
             except Exception as exc:
-                emit(f"{src.name}: 失败 -> {exc}，尝试下一个源")
-        emit("所有来源均未成功")
+                # 使用统一的错误处理
+                try:
+                    error = from_requests_error(exc, src.name, "download")
+                    error_msg = log_error(error, src.name, "download")
+                except:
+                    error_msg = log_error(exc, src.name, "download")
+                emit(error_msg)
+
+        emit(log_warning("ALL", "download", "所有来源均未成功"))
         return None, logs

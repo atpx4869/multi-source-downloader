@@ -17,6 +17,13 @@ from .http_search import call_api, find_rows
 from .base import BaseSource, DownloadResult
 from .registry import registry
 
+# 导入超时配置
+try:
+    from core.timeout_config import get_timeout
+except ImportError:
+    def get_timeout(source: str, operation: str) -> int:
+        return 10
+
 # Pre-compile regex patterns
 _HTML_TAG_RE = re.compile(r'<[^>]+>')
 _WHITESPACE_RE = re.compile(r'\s+')
@@ -26,8 +33,15 @@ _STD_CODE_SLASH_RE = re.compile(r'([A-Z])\s*/\s*([A-Z])')
 @registry.register
 class GBWSource(BaseSource):
     """GBW (国标委) Data Source"""
-    
+
     # 源标识和元数据
+    name = "GBW"
+
+    # 使用统一的超时配置
+    SEARCH_TIMEOUT = get_timeout("GBW", "search")
+    DOWNLOAD_TIMEOUT = get_timeout("GBW", "download")
+    DETAIL_TIMEOUT = get_timeout("GBW", "detail")
+    PDF_CHECK_TIMEOUT = get_timeout("GBW", "pdf_check")
     source_id = "gbw"
     source_name = "国家标准信息公共服务平台"
     priority = 1
@@ -114,8 +128,8 @@ class GBWSource(BaseSource):
             text = None
             for url, url_type in url_attempts:
                 try:
-                    # 搜索时用较短的超时（5秒）
-                    resp = self.session.get(url, timeout=5, proxies={"http": None, "https": None})
+                    # 搜索时用较短的超时
+                    resp = self.session.get(url, timeout=self.PDF_CHECK_TIMEOUT, proxies={"http": None, "https": None})
                     if resp.status_code == 200:
                         resp.encoding = 'utf-8'
                         text = resp.text
@@ -204,7 +218,7 @@ class GBWSource(BaseSource):
                 "pageSize": page_size
             }
             # 搜索时允许 1 次重试（快速失败 + 容错）
-            j = call_api(self.session, 'GET', search_url, params=params, timeout=8, retries=1, verify_ssl=False)
+            j = call_api(self.session, 'GET', search_url, params=params, timeout=self.SEARCH_TIMEOUT, retries=1, verify_ssl=False)
             rows = find_rows(j)
         except Exception:
             pass
@@ -276,8 +290,8 @@ class GBWSource(BaseSource):
                 # 尝试两个可能的详情页域名
                 for base in ["https://std.samr.gov.cn", "https://openstd.samr.gov.cn"]:
                     detail_url = f"{base}/gb/search/gbDetailed?id={item_id}"
-                    # 显式禁用代理，超时提高到 15 秒（防止网络抖动）
-                    resp = self.session.get(detail_url, timeout=15, proxies={"http": None, "https": None}, verify=False)
+                    # 显式禁用代理，使用配置的详情页超时
+                    resp = self.session.get(detail_url, timeout=self.DETAIL_TIMEOUT, proxies={"http": None, "https": None}, verify=False)
                     if resp.status_code != 200:
                         continue
                     
@@ -309,7 +323,7 @@ class GBWSource(BaseSource):
 
                 # 如果还是没找到，尝试直接在 openstd 搜索该 ID
                 search_url = f"https://openstd.samr.gov.cn/bzgk/gb/search/gbQueryPage?searchText={item_id}"
-                resp = self.session.get(search_url, timeout=15, proxies={"http": None, "https": None}, verify=False)
+                resp = self.session.get(search_url, timeout=self.DETAIL_TIMEOUT, proxies={"http": None, "https": None}, verify=False)
                 match = re.search(r'hcno=([A-F0-9]{32})', resp.text)
                 if match:
                     return match.group(1)

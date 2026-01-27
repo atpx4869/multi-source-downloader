@@ -11,6 +11,13 @@ from core.models import Standard
 from .base import BaseSource, DownloadResult
 from .registry import registry
 
+# 导入超时配置
+try:
+    from core.timeout_config import get_timeout
+except ImportError:
+    def get_timeout(source: str, operation: str) -> int:
+        return 10
+
 
 # BY 内网系统配置
 BASE = "http://172.16.100.72:8080"
@@ -18,9 +25,11 @@ LOGIN_URL = f"{BASE}/login.aspx"
 DEPT_ID = "fc4186fba640402188b91e6bd0d491a6"  # 建材产品检测研究所
 USERNAME = "leiming"  # 雷明
 PASSWORD = "888888"
-TIMEOUT = 10  # 网络请求超时秒
-TIMEOUT_FAST = 3  # 内网高速下载超时秒（内网应该非常快）
 MAX_PAGES = 5  # 每次检索最多抓取的分页数，防止阻塞
+
+# 使用统一的超时配置
+TIMEOUT = get_timeout("BY", "search")  # 搜索超时
+TIMEOUT_FAST = get_timeout("BY", "download")  # 下载超时
 
 
 def _extract_hidden(html: str, name: str) -> str:

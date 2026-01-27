@@ -25,6 +25,13 @@ from core.models import Standard
 from .base import BaseSource, DownloadResult
 from .registry import registry
 
+# 导入超时配置
+try:
+    from core.timeout_config import get_timeout
+except ImportError:
+    def get_timeout(source: str, operation: str) -> int:
+        return 10
+
 
 # Prefer local shim; fall back to dotted import for compatibility
 try:
@@ -62,8 +69,13 @@ class ZBYSource(BaseSource):
     source_id = "zby"
     source_name = "正规标准网"
     priority = 3
-    
+
     name = "ZBY"
+
+    # 使用统一的超时配置
+    SEARCH_TIMEOUT = get_timeout("ZBY", "search")
+    DOWNLOAD_TIMEOUT = get_timeout("ZBY", "download")
+    API_TIMEOUT = get_timeout("ZBY", "api")
 
     def __init__(self, output_dir: Union[Path, str] = "downloads") -> None:
         od = Path(output_dir)

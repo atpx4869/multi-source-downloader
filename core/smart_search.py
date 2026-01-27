@@ -14,6 +14,14 @@ from functools import lru_cache
 if TYPE_CHECKING:
     from core.unified_models import UnifiedStandard
 
+# 导入超时配置
+try:
+    from core.timeout_config import get_parallel_timeout
+except ImportError:
+    # 如果配置文件不存在，使用默认值
+    def get_parallel_timeout(operation: str) -> int:
+        return 15
+
 
 # 预编译正则表达式 - 避免每次调用都重新编译
 # 精确匹配 GB/T、GB、GBT，排除 QB/T、WB/T 等其他标准
@@ -183,13 +191,49 @@ class SmartSearchThread:
                 print(f"[SmartSearch] GBW 搜索失败: {e}")
                 return []
 
-        # 并行执行两个搜索
+        # 并行执行两个搜索，添加超时控制
+        search_timeout = get_parallel_timeout("search_total")
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_zby = executor.submit(search_zby)
             future_gbw = executor.submit(search_gbw)
 
-            zby_results = future_zby.result()
-            gbw_results = future_gbw.result()
+            try:
+                # 使用 as_completed 并设置总超时
+                done, not_done = concurrent.futures.wait(
+                    [future_zby, future_gbw],
+                    timeout=search_timeout,
+                    return_when=concurrent.futures.ALL_COMPLETED
+                )
+
+                # 获取结果
+                if future_zby in done:
+                    try:
+                        zby_results = future_zby.result(timeout=0)
+                    except Exception as e:
+                        print(f"[SmartSearch] ZBY 搜索异常: {e}")
+                        zby_results = []
+                else:
+                    print(f"[SmartSearch] ZBY 搜索超时 ({search_timeout}秒)")
+                    zby_results = []
+
+                if future_gbw in done:
+                    try:
+                        gbw_results = future_gbw.result(timeout=0)
+                    except Exception as e:
+                        print(f"[SmartSearch] GBW 搜索异常: {e}")
+                        gbw_results = []
+                else:
+                    print(f"[SmartSearch] GBW 搜索超时 ({search_timeout}秒)")
+                    gbw_results = []
+
+                # 取消未完成的任务
+                for future in not_done:
+                    future.cancel()
+
+            except Exception as e:
+                print(f"[SmartSearch] 并行搜索异常: {e}")
+                zby_results = []
+                gbw_results = []
 
         # 合并结果
         merged = StandardSearchMerger.merge_results(zby_results, gbw_results)
