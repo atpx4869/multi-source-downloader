@@ -142,8 +142,8 @@ class ZBYSource:
 			return Standard(
 				std_no=std_no,
 				name=name,
-				publish=pub_date,
-				implement=imp_date,
+				publish_date=pub_date,
+				implement_date=imp_date,
 				status=status,
 				has_pdf=has_pdf,
 				source_meta={"title": title, "has_pdf": has_pdf},

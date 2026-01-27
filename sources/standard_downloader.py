@@ -82,8 +82,8 @@ class StandardDownloader:
                     item = Standard(
                         std_no=(meta.get('standardNum') or meta.get('std_no') or '').strip(),
                         name=(meta.get('standardName') or meta.get('name') or '').strip(),
-                        publish=(meta.get('standardPubTime') or meta.get('publish') or '')[:10],
-                        implement=(meta.get('standardUsefulDate') or meta.get('implement') or '')[:10],
+                        publish_date=(meta.get('standardPubTime') or meta.get('publish') or '')[:10],
+                        implement_date=(meta.get('standardUsefulDate') or meta.get('implement') or '')[:10],
                         status=mapped_status,
                         has_pdf=bool(meta.get('hasPdf') or meta.get('has_pdf') or False),
                         source_meta=meta,

@@ -3528,8 +3528,8 @@ class MainWindow(QtWidgets.QMainWindow):
             std = Standard(
                 std_no=metadata.get("std_no", task.std_no),
                 name=metadata.get("name", task.std_name),
-                publish=metadata.get("publish", ""),
-                implement=metadata.get("implement", ""),
+                publish_date=metadata.get("publish", ""),
+                implement_date=metadata.get("implement", ""),
                 status=metadata.get("status", ""),
                 sources=metadata.get("sources", []),
                 has_pdf=True,

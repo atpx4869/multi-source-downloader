@@ -802,8 +802,8 @@ class HistoryDialog(QtWidgets.QDialog):
             std = Standard(
                 std_no=obj_data.get("std_no", ""),
                 name=obj_data.get("name", ""),
-                publish=obj_data.get("publish", ""),
-                implement=obj_data.get("implement", ""),
+                publish_date=obj_data.get("publish", ""),
+                implement_date=obj_data.get("implement", ""),
                 status=obj_data.get("status", ""),
                 sources=obj_data.get("sources", []),
                 has_pdf=obj_data.get("has_pdf", False),
