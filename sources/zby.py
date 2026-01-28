@@ -560,6 +560,51 @@ class ZBYSource(BaseSource):
         try:
             meta = item.source_meta if isinstance(item.source_meta, dict) else {}
             std_id = meta.get("standardId") or meta.get("id") or meta.get("standardid")
+
+            # 优先检查 pdfList 或 taskPdfList
+            pdf_list = meta.get("pdfList") or meta.get("taskPdfList")
+            if pdf_list and isinstance(pdf_list, list) and len(pdf_list) > 0:
+                emit(f"ZBY: 从 meta 中发现 pdfList，尝试直接下载...")
+                pdf_info = pdf_list[0]  # 使用第一个 PDF
+
+                # 提取 UUID
+                if isinstance(pdf_info, dict):
+                    # 尝试多种可能的字段名
+                    uuid = (pdf_info.get('uuid') or
+                           pdf_info.get('resourceId') or
+                           pdf_info.get('docId') or
+                           pdf_info.get('fileId'))
+
+                    if uuid:
+                        emit(f"ZBY: 从 pdfList 提取到 UUID: {uuid[:8]}...")
+                        result = download_images_to_pdf(uuid, item.filename(), outdir, [], emit)
+                        if result:
+                            return result, logs
+
+                    # 尝试直接 URL
+                    url = (pdf_info.get('url') or
+                          pdf_info.get('fileUrl') or
+                          pdf_info.get('downloadUrl'))
+
+                    if url:
+                        emit(f"ZBY: 从 pdfList 发现下载链接，尝试直接下载...")
+                        try:
+                            import requests
+                            session = requests.Session()
+                            session.trust_env = False
+                            resp = session.get(url, timeout=30, stream=True, proxies={"http": None, "https": None})
+                            if resp.status_code == 200:
+                                output_path = outdir / item.filename()
+                                with open(output_path, 'wb') as f:
+                                    for chunk in resp.iter_content(8192):
+                                        if chunk:
+                                            f.write(chunk)
+                                emit(f"ZBY: PDF 下载成功")
+                                return output_path, logs
+                        except Exception as e:
+                            emit(f"ZBY: 直接下载失败: {e}")
+
+            # 如果 pdfList 不可用，尝试通过 standardId
             if std_id:
                 emit(f"ZBY: 尝试通过 standardId ({std_id}) 直接获取文档...")
                 http_try = self._download_via_standard_id(std_id, item, outdir, emit)
