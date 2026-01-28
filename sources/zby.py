@@ -21,6 +21,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 配置日志记录
 logger = logging.getLogger(__name__)
 
+# 导入性能监控工具
+try:
+    from core.performance import get_performance_monitor, get_connection_pool_manager
+    performance_monitor = get_performance_monitor()
+    pool_manager = get_connection_pool_manager()
+except ImportError:
+    performance_monitor = None
+    pool_manager = None
+
 from requests import Response
 
 DEFAULT_BASE_URL = "https://bz.zhenggui.vip"
@@ -227,6 +236,16 @@ class ZBYSource(BaseSource):
             return False
 
     def search(self, keyword: str, **kwargs) -> List[Standard]:
+        """搜索标准"""
+        # 性能监控
+        if performance_monitor:
+            with performance_monitor.measure("search", "ZBY"):
+                return self._search_impl(keyword, **kwargs)
+        else:
+            return self._search_impl(keyword, **kwargs)
+
+    def _search_impl(self, keyword: str, **kwargs) -> List[Standard]:
+        """搜索实现（内部方法）"""
         items = []
         
         # 搜索时禁用Playwright，快速失败策略

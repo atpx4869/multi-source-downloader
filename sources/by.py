@@ -15,6 +15,15 @@ from .registry import registry
 # 配置日志记录
 logger = logging.getLogger(__name__)
 
+# 导入性能监控工具
+try:
+    from core.performance import get_performance_monitor, get_connection_pool_manager
+    performance_monitor = get_performance_monitor()
+    pool_manager = get_connection_pool_manager()
+except ImportError:
+    performance_monitor = None
+    pool_manager = None
+
 # 导入超时配置
 try:
     from core.timeout_config import get_timeout
@@ -197,8 +206,19 @@ class BYSource(BaseSource):
     
     def __init__(self):
         self.name = "BY"
-        self.session = requests.Session()
-        self.session.trust_env = False  # 忽略系统代理
+
+        # 使用优化的连接池管理器
+        if pool_manager:
+            self.session = pool_manager.create_session(
+                timeout=TIMEOUT,
+                max_retries=2,
+                backoff_factor=0.3
+            )
+        else:
+            # 降级方案：使用普通 session
+            self.session = requests.Session()
+            self.session.trust_env = False
+
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
@@ -226,6 +246,15 @@ class BYSource(BaseSource):
     
     def search(self, keyword: str, page: int = 1, page_size: int = 20, **kwargs) -> List[Standard]:
         """Search standards from BY internal system"""
+        # 性能监控
+        if performance_monitor:
+            with performance_monitor.measure("search", "BY"):
+                return self._search_impl(keyword, page, page_size, **kwargs)
+        else:
+            return self._search_impl(keyword, page, page_size, **kwargs)
+
+    def _search_impl(self, keyword: str, page: int = 1, page_size: int = 20, **kwargs) -> List[Standard]:
+        """搜索实现（内部方法）"""
         items = []
         
         # 检查内网是否可访问

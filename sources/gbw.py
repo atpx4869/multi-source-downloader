@@ -7,15 +7,28 @@ import requests
 import urllib3
 from pathlib import Path
 from typing import List, Callable
+import logging
 
 # 抑制 urllib3 的 SSL 验证警告（我们故意禁用 SSL 验证以兼容国内网站）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 配置日志记录
+logger = logging.getLogger(__name__)
 
 from core.models import Standard
 from .gbw_download import get_hcno, download_with_ocr, sanitize_filename, prewarm_ocr
 from .http_search import call_api, find_rows
 from .base import BaseSource, DownloadResult
 from .registry import registry
+
+# 导入性能监控工具
+try:
+    from core.performance import get_performance_monitor, get_connection_pool_manager
+    performance_monitor = get_performance_monitor()
+    pool_manager = get_connection_pool_manager()
+except ImportError:
+    performance_monitor = None
+    pool_manager = None
 
 # 导入超时配置
 try:
@@ -52,9 +65,20 @@ class GBWSource(BaseSource):
     def __init__(self):
         self.name = "GBW"
         self.base_url = "https://std.samr.gov.cn"
-        self.session = requests.Session()
-        self.session.trust_env = False  # 忽略系统代理设置
-        self.session.proxies = {"http": None, "https": None} # 显式禁用代理
+
+        # 使用优化的连接池管理器
+        if pool_manager:
+            self.session = pool_manager.create_session(
+                timeout=self.SEARCH_TIMEOUT,
+                max_retries=2,
+                backoff_factor=0.3
+            )
+        else:
+            # 降级方案：使用普通 session
+            self.session = requests.Session()
+            self.session.trust_env = False
+            self.session.proxies = {"http": None, "https": None}
+
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
@@ -152,6 +176,15 @@ class GBWSource(BaseSource):
     
     def search(self, keyword: str, page: int = 1, page_size: int = 20, **kwargs) -> List[Standard]:
         """Search standards from GBW API"""
+        # 性能监控
+        if performance_monitor:
+            with performance_monitor.measure("search", "GBW"):
+                return self._search_impl(keyword, page, page_size, **kwargs)
+        else:
+            return self._search_impl(keyword, page, page_size, **kwargs)
+
+    def _search_impl(self, keyword: str, page: int = 1, page_size: int = 20, **kwargs) -> List[Standard]:
+        """搜索实现（内部方法）"""
         items = []
         
         # 优化：只尝试原始关键词，快速失败，不重试
