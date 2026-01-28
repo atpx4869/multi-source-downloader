@@ -85,120 +85,66 @@ class GBWSource(BaseSource):
     
     def _check_pdf_available(self, item_id: str, hcno: str = "") -> bool:
         """
-        三层PDF可用性检测（分级判定模式）
-        
+        优化的PDF可用性检测（两层判定）
+
         第一层：缓存检查 - 避免重复访问详情页
-        第二层：启发式判定 - 根据不同按钮类型分级判定
-        第三层：保守降级 - 无法确定时返回False
-        
-        按钮类型判定（可靠性递减）：
-        1. ck_btn + xz_btn  → True（新版标准，可信度最高 ✅✅✅）
-        2. openpdf          → True（中等可信度 ⚠️⚠️）
-        3. data-value HCNO  → True（中等可信度 ⚠️⚠️）
-        4. 版权限制提示     → False（黑名单 ❌）
-        5. 都没有           → False（保守判定 ⚠️）
+        第二层：快速判定 - 仅检查关键标识
+
+        优化说明：
+        - 减少不必要的网络请求
+        - 简化判定逻辑，提升搜索速度
+        - 保持准确性的同时提升性能
         """
         if not item_id:
             return False
-        
+
         # 第一层：缓存检查（类变量，所有实例共享）
         cache_key = hcno if hcno else item_id
         if cache_key in GBWSource._pdf_check_cache:
             return GBWSource._pdf_check_cache[cache_key]
-        
+
         try:
-            # 如果没有传入HCNO，先从旧版详情页获取（但用较短的超时）
-            if not hcno:
-                try:
-                    hcno = self._get_hcno(item_id)
-                except Exception:
-                    hcno = None  # 获取HCNO失败就跳过
-            
-            # 构建URL优先级列表（优先使用HCNO访问新版API）
-            url_attempts = []
+            # 如果有HCNO，优先使用新版API（更快更准确）
             if hcno:
-                # 优先：新版API（更准确，包含版权信息）
-                url_attempts.append((f"https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno={hcno}", "newGbInfo"))
-            # 备选：旧版详情页
-            url_attempts.extend([
-                (f"https://std.samr.gov.cn/gb/search/gbDetailed?id={item_id}", "gbDetailed"),
-                (f"https://openstd.samr.gov.cn/gb/search/gbDetailed?id={item_id}", "gbDetailed"),
-            ])
-            
-            text = None
-            for url, url_type in url_attempts:
-                try:
-                    # 搜索时用较短的超时
-                    resp = self.session.get(url, timeout=self.PDF_CHECK_TIMEOUT, proxies={"http": None, "https": None})
-                    if resp.status_code == 200:
-                        resp.encoding = 'utf-8'
-                        text = resp.text
-                        break
-                except Exception:
-                    continue
-            
-            if not text:
+                url = f"https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno={hcno}"
+            else:
+                # 否则使用旧版详情页
+                url = f"https://std.samr.gov.cn/gb/search/gbDetailed?id={item_id}"
+
+            # 使用较短的超时，快速失败
+            resp = self.session.get(url, timeout=self.PDF_CHECK_TIMEOUT, proxies={"http": None, "https": None}, verify=False)
+
+            if resp.status_code != 200:
                 GBWSource._pdf_check_cache[cache_key] = False
                 return False
-            
-            # 第二层：启发式判定
-            
-            # 黑名单检查：版权限制提示（最高优先级，一旦发现直接返回False）
+
+            resp.encoding = 'utf-8'
+            text = resp.text
+
+            # 第二层：快速判定
+
+            # 黑名单检查（版权限制关键词）
             no_read_keywords = [
-                "本系统暂不提供在线阅读",
-                "版权保护问题",
-                "涉及版权保护",
-                "暂不提供",
-                "无预览权限",
-                "不提供下载",
-                "购买正式标准出版物",  # 新增：用户提供的页面中的关键词
-                "联系中国标准出版社",    # 新增：明确要求购买
-                "需要购买",
-                "已下架",
-                "您所查询的标准系统尚未收录",
-                "将在发布后20个工作日内公开",
-                "陆续完成公开",
-                "标准废止"
+                "本系统暂不提供在线阅读", "版权保护", "暂不提供",
+                "无预览权限", "不提供下载", "购买正式标准出版物",
+                "需要购买", "已下架", "系统尚未收录", "标准废止"
             ]
-            
+
             for keyword in no_read_keywords:
                 if keyword in text:
                     GBWSource._pdf_check_cache[cache_key] = False
                     return False
-                
-                # 白名单检查：按可靠性递减
-                
-                # 等级1：ck_btn + xz_btn（新版GBW，可信度最高）
-                # 这类按钮表示可以在线预览和下载，属于新版标准
-                if 'ck_btn' in text or '在线预览' in text:
-                    if 'xz_btn' in text or '下载标准' in text:
-                        GBWSource._pdf_check_cache[cache_key] = True
-                        return True
-                
-                # 等级2：openpdf（旧版GBW，但相对可信）
-                # 这表示可以通过PDF查看器打开文档
-                if 'openpdf' in text or 'pdfPreview' in text or 'pdfpreview' in text:
-                    GBWSource._pdf_check_cache[cache_key] = True
-                    return True
-                
-                # 等级3：data-value HCNO（有HCNO通常意味着可以访问）
-                if 'data-value=' in text:
-                    import re
-                    hcno_match = re.search(r'data-value=["\']([A-F0-9]{32})["\']', text, re.IGNORECASE)
-                    if hcno_match:
-                        GBWSource._pdf_check_cache[cache_key] = True
-                        return True
-                
-                # 等级4：只有在线预览按钮（不一定能下载）
-                if 'ck_btn' in text or '在线预览' in text:
-                    # 只有预览没有下载时，保守返回False
-                    GBWSource._pdf_check_cache[cache_key] = False
-                    return False
-                
-                # 都没找到：返回False（保守判定）
-                GBWSource._pdf_check_cache[cache_key] = False
-                return False
-            
+
+            # 白名单检查（可用性标识）
+            # 检查是否有预览或下载按钮
+            has_preview = any(k in text for k in ['ck_btn', '在线预览', 'openpdf', 'pdfPreview'])
+            has_download = any(k in text for k in ['xz_btn', '下载标准', 'data-value='])
+
+            # 有预览或下载功能即认为可用
+            result = has_preview or has_download
+            GBWSource._pdf_check_cache[cache_key] = result
+            return result
+
         except Exception:
             # 访问异常时，保守起见返回False
             GBWSource._pdf_check_cache[cache_key] = False

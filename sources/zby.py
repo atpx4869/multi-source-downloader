@@ -13,9 +13,13 @@ import tempfile
 import shutil
 import os
 import urllib3
+import logging
 
 # 抑制 urllib3 的 SSL 验证警告（我们故意禁用 SSL 验证以兼容国内网站）
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 配置日志记录
+logger = logging.getLogger(__name__)
 
 from requests import Response
 
@@ -77,6 +81,11 @@ class ZBYSource(BaseSource):
     DOWNLOAD_TIMEOUT = get_timeout("ZBY", "download")
     API_TIMEOUT = get_timeout("ZBY", "api")
 
+    # 类级别的配置缓存（所有实例共享）
+    _api_base_url_cache = None
+    _cache_timestamp = 0
+    _cache_ttl = 3600  # 缓存1小时
+
     def __init__(self, output_dir: Union[Path, str] = "downloads") -> None:
         od = Path(output_dir)
         try:
@@ -106,11 +115,30 @@ class ZBYSource(BaseSource):
                 self.client = None
                 self.base_url: str = DEFAULT_BASE_URL
 
-        # 尝试从前端 config.yaml 读取真实 API 基址（无需额外依赖）
+        # 尝试从前端 config.yaml 读取真实 API 基址（使用缓存）
         try:
-            self.api_base_url: str = self._load_api_base_url_from_config(timeout=4)
+            self.api_base_url: str = self._load_api_base_url_from_config_cached(timeout=4)
         except Exception:
             self.api_base_url = None
+
+    def _load_api_base_url_from_config_cached(self, timeout: int = 4) -> str:
+        """从 config.yaml 读取 BZY_BASE_URL，使用类级别缓存。"""
+        import time
+
+        # 检查缓存是否有效
+        current_time = time.time()
+        if (ZBYSource._api_base_url_cache is not None and
+            current_time - ZBYSource._cache_timestamp < ZBYSource._cache_ttl):
+            return ZBYSource._api_base_url_cache
+
+        # 缓存失效，重新获取
+        url = self._load_api_base_url_from_config(timeout)
+
+        # 更新缓存
+        ZBYSource._api_base_url_cache = url
+        ZBYSource._cache_timestamp = current_time
+
+        return url
 
     def _load_api_base_url_from_config(self, timeout: int = 4) -> str:
         """从 https://bz.zhenggui.vip/config.yaml 读取 BZY_BASE_URL。
@@ -258,45 +286,38 @@ class ZBYSource(BaseSource):
                 if num_match:
                     keywords_to_try.append(num_match.group(1))
             
-            print(f"[ZBY DEBUG] 尝试搜索关键词: {keywords_to_try}")
-            
             # 去重并保持顺序
             keywords_to_try = list(dict.fromkeys(keywords_to_try))
-            
+
             rows = []
             for kw in keywords_to_try:
                 try:
-                    print(f"[ZBY DEBUG] 正在尝试关键词: '{kw}'")
                     rows = search_via_api(kw, page=page, page_size=page_size, session=session, timeout=8)
-                    print(f"[ZBY DEBUG] 关键词 '{kw}' 返回 {len(rows)} 条原始结果")
                     if rows:
                         # 过滤结果，确保标准类型和编号都匹配
                         filtered_rows = []
                         clean_keyword = re.sub(r'[^A-Z0-9]', '', keyword.upper())
-                        print(f"[ZBY DEBUG] 清理后的关键词: '{clean_keyword}', 期望前缀: '{expected_prefix}'")
                         for r in rows:
                             r_no = re.sub(r'[^A-Z0-9]', '', (r.get('standardNumDeal') or '').upper())
                             # 提取结果的标准类型前缀
                             r_prefix_match = re.match(r'([A-Z]+)', r_no)
                             r_prefix = r_prefix_match.group(1) if r_prefix_match else ''
-                            
+
                             # 严格匹配：标准类型必须一致
                             if expected_prefix and r_prefix:
                                 if not r_prefix.startswith(expected_prefix):
                                     continue  # 标准类型不匹配，跳过
-                            
+
                             # 标准号匹配（模糊匹配）
                             if clean_keyword in r_no or r_no in clean_keyword:
                                 filtered_rows.append(r)
-                        print(f"[ZBY DEBUG] 过滤后剩余 {len(filtered_rows)} 条结果")
                         if filtered_rows:
                             rows = filtered_rows
                             break  # 有匹配结果，不再尝试其他关键词
                 except Exception:
                     continue  # 当前关键词失败，尝试下一个
-            
+
             if rows:
-                print(f"[ZBY DEBUG] 开始转换 {len(rows)} 条结果为Standard对象")
                 for row in rows:
                     try:
                         # Prefer standardNum (contains HTML) over standardNumDeal (stripped)
@@ -359,10 +380,8 @@ class ZBYSource(BaseSource):
                         pub = (row.get('standardPubTime') or row.get('publish') or '')
                         # impl 已在状态修正时提取，复用
                         items.append(Standard(std_no=std_no, name=name, publish_date=str(pub)[:10], implement_date=str(impl)[:10], status=status, replace_std=replace_std, has_pdf=has_pdf, source_meta=meta, sources=['ZBY']))
-                    except Exception as e:
-                        print(f"[ZBY DEBUG] 转换失败: {e}")
+                    except Exception:
                         pass
-                print(f"[ZBY DEBUG] 成功转换 {len(items)} 条Standard对象")
                 return items[:int(page_size)]
             
             # API 返回空：尝试 HTML 爬虫（对行业标准如 QB/T 更友好）

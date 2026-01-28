@@ -6,10 +6,14 @@ import re
 import requests
 from pathlib import Path
 from typing import List, Callable, Optional, Dict, Any
+import logging
 
 from core.models import Standard
 from .base import BaseSource, DownloadResult
 from .registry import registry
+
+# 配置日志记录
+logger = logging.getLogger(__name__)
 
 # 导入超时配置
 try:
