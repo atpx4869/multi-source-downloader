@@ -7,7 +7,8 @@
       "mcp__ace-tool__enhance_prompt",
       "mcp__ace-tool__search_context",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(python -m py_compile:*)"
     ]
   }
 }

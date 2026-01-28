@@ -28,6 +28,12 @@ DEFAULT_BASE_URL = "https://bz.zhenggui.vip"
 from core.models import Standard
 from .base import BaseSource, DownloadResult
 from .registry import registry
+from .zby_utils import (
+    extract_uuid_from_text,
+    extract_all_uuids_from_text,
+    download_images_to_pdf,
+    sanitize_log_message
+)
 
 # 导入超时配置
 try:
@@ -576,7 +582,7 @@ class ZBYSource(BaseSource):
 
     def _download_via_standard_id(self, std_id: str, item: Standard, output_dir: Path, emit: callable):
         """通过 standardId 直接访问 standardDetail 页面，提取文档 URL 并下载。
-        
+
         该方法尝试从 https://bz.zhenggui.vip/standardDetail?standardId={id} 页面
         提取文档下载链接或资源 UUID。
         """
@@ -584,7 +590,7 @@ class ZBYSource(BaseSource):
             import requests
         except Exception:
             return None
-        
+
         try:
             session = requests.Session()
             session.trust_env = False
@@ -592,11 +598,11 @@ class ZBYSource(BaseSource):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                 "Referer": self.base_url,
             })
-            
+
             # 访问 standardDetail 页面
             detail_url = f"{self.base_url}/standardDetail?standardId={std_id}&docStatus=0"
             emit(f"ZBY: 访问详情页: standardId={std_id}")
-            
+
             try:
                 r = session.get(detail_url, timeout=10, proxies={"http": None, "https": None})
                 if r.status_code != 200:
@@ -605,26 +611,18 @@ class ZBYSource(BaseSource):
             except Exception as e:
                 emit(f"ZBY: 访问详情页失败: {e}")
                 return None
-            
-            # 尝试从 HTML 中提取多种可能的 UUID/下载链接
-            # 1) 直接匹配 immdoc/{uuid}/doc
-            m = re.search(r'immdoc/([a-zA-Z0-9-]+)/doc', html)
-            if m:
-                uuid = m.group(1)
+
+            # 使用工具函数提取 UUID
+            uuid = extract_uuid_from_text(html)
+            if uuid:
                 emit(f"ZBY: 从详情页提取到 UUID: {uuid[:8]}...")
                 cookies = [{'name': c.name, 'value': c.value} for c in session.cookies]
-                return self._download_images(uuid, item.filename(), output_dir, cookies, emit)
-            
-            # 2) 尝试匹配任何 UUID 格式
-            uuids = re.findall(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', html)
-            for uuid in uuids:
-                emit(f"ZBY: 尝试提取到的 UUID: {uuid[:8]}...")
-                cookies = [{'name': c.name, 'value': c.value} for c in session.cookies]
-                res = self._download_images(uuid, item.filename(), output_dir, cookies, emit)
-                if res:
-                    return res
-            
-            # 3) 尝试从 HTML 中搜索 PDF 直链
+                result = download_images_to_pdf(uuid, item.filename(), output_dir, cookies, emit)
+                if result:
+                    return result, []
+                return result
+
+            # 尝试从 HTML 中搜索 PDF 直链
             pdf_links = re.findall(r'(https?://[^\s"<>]+\.pdf)', html, re.IGNORECASE)
             for pdf_url in pdf_links:
                 try:
@@ -638,97 +636,15 @@ class ZBYSource(BaseSource):
                                 if chunk:
                                     f.write(chunk)
                         emit(f"ZBY: PDF 下载成功")
-                        if callable(emit):
-                            return output_path, []
-                        return output_path
+                        return output_path, []
                 except Exception:
                     continue
-            
+
             emit(f"ZBY: 从详情页无法提取到文档资源")
             return None
-            
+
         except Exception as e:
             emit(f"ZBY: standardId 下载异常: {e}")
-            return None
-
-    def _download_images(self, uuid: str, filename: str, output_dir: Path, cookies: list, emit: callable):
-        """通过资源 UUID 下载分页图片并合成 PDF。
-
-        该逻辑不依赖 Playwright，仅需 requests + img2pdf。
-        """
-        try:
-            import requests
-        except Exception:
-            emit("ZBY: requests 不可用，无法下载")
-            return None
-
-        try:
-            import img2pdf
-        except Exception:
-            emit("ZBY: 缺少 img2pdf，无法合成 PDF")
-            return None
-
-        try:
-            uuid = (uuid or "").strip()
-            if not uuid:
-                return None
-            emit(f"ZBY: 获取到UUID: {uuid[:8]}..., 开始下载")
-
-            temp_dir = output_dir / "zby_temp"
-            try:
-                if temp_dir.exists():
-                    shutil.rmtree(temp_dir)
-            except Exception:
-                pass
-            temp_dir.mkdir(parents=True, exist_ok=True)
-
-            # cookies: list[{'name':..., 'value':...}] -> dict
-            cookies_dict = {}
-            try:
-                for c in (cookies or []):
-                    if isinstance(c, dict) and c.get('name'):
-                        cookies_dict[str(c.get('name'))] = str(c.get('value') or '')
-            except Exception:
-                cookies_dict = {}
-
-            session = requests.Session()
-            session.trust_env = False
-
-            imgs = []
-            page_num = 1
-            while True:
-                try:
-                    url = f"https://resource.zhenggui.vip/immdoc/{uuid}/doc/I/{page_num}"
-                    r = session.get(url, cookies=cookies_dict, timeout=15, proxies={"http": None, "https": None})
-                    if getattr(r, 'status_code', 0) != 200 or not getattr(r, 'content', b''):
-                        break
-                    img_path = temp_dir / f"{page_num:04d}.jpg"
-                    with open(img_path, 'wb') as f:
-                        f.write(r.content)
-                    imgs.append(str(img_path))
-                    if page_num % 5 == 0:
-                        emit(f"ZBY: 已下载 {page_num} 页")
-                    page_num += 1
-                except Exception as e:
-                    emit(f"ZBY: 第 {page_num} 页下载失败: {e}")
-                    break
-
-            if imgs:
-                emit(f"ZBY: 共 {len(imgs)} 页，正在合成PDF...")
-                output_path = output_dir / filename
-                with open(output_path, "wb") as f:
-                    f.write(img2pdf.convert(imgs))
-                emit("ZBY: PDF生成成功")
-                try:
-                    shutil.rmtree(temp_dir)
-                except Exception:
-                    pass
-                return output_path, []
-
-            emit("ZBY: 未下载到任何页面")
-            return None
-        except Exception as e:
-            emit(f"ZBY: _download_images 异常: {e}")
             return None
 
     def _http_download_via_uuid(self, item: Standard, output_dir: Path, emit: callable):
@@ -818,7 +734,7 @@ class ZBYSource(BaseSource):
                                 uuid = _scan_for_uuid(j)
                                 if uuid:
                                     emit(f"ZBY: 从 API 获取到资源 UUID: {uuid[:8]}...")
-                                    return self._download_images(uuid, item.filename(), output_dir, [], emit)
+                                    return download_images_to_pdf(uuid, item.filename(), output_dir, [], emit)
                                 if not api_sample and isinstance(j, dict):
                                     code = j.get('code') if 'code' in j else j.get('status')
                                     msg = j.get('msg') if 'msg' in j else j.get('message')
@@ -849,19 +765,18 @@ class ZBYSource(BaseSource):
                     emit(f"ZBY: 检查详情页...")
                     r: Response = session.get(du, timeout=8, proxies={"http": None, "https": None})
                     if r.status_code == 200:
-                        # 尝试从 HTML 中提取 UUID
-                        m = re.search(r'immdoc/([a-zA-Z0-9-]+)/doc', r.text)
-                        if m:
-                            uuid = m.group(1)
+                        # 使用工具函数提取 UUID
+                        uuid = extract_uuid_from_text(r.text)
+                        if uuid:
                             emit(f"ZBY: 从详情页发现资源 UUID: {uuid[:8]}...")
                             cookies = [{ 'name': c.name, 'value': c.value } for c in session.cookies]
-                            return self._download_images(uuid, item.filename(), output_dir, cookies, emit)
-                        
-                        # 尝试从 HTML 中提取任何看起来像 UUID 的字符串
-                        uuids = re.findall(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', r.text)
+                            return download_images_to_pdf(uuid, item.filename(), output_dir, cookies, emit)
+
+                        # 尝试提取所有可能的 UUID
+                        uuids = extract_all_uuids_from_text(r.text)
                         for uid in uuids:
                             emit(f"ZBY: 尝试提取到的 UUID: {uid[:8]}...")
-                            res = self._download_images(uid, item.filename(), output_dir, [], emit)
+                            res = download_images_to_pdf(uid, item.filename(), output_dir, [], emit)
                             if res: return res
                 except Exception:
                     continue
@@ -894,13 +809,11 @@ class ZBYSource(BaseSource):
                     if not url:
                         continue
 
-                    # 若链接中包含 immdoc，尝试提取 uuid 并用现有 _download_images
-                    m = re.search(r'immdoc/([a-zA-Z0-9-]+)/doc', url)
-                    if m:
-                        uuid = m.group(1)
-                        cookies = []
+                    # 使用工具函数提取 UUID
+                    uuid = extract_uuid_from_text(url)
+                    if uuid:
                         emit(f"ZBY: 从 meta 发现可用资源 UUID: {uuid[:8]}...，尝试 HTTP 下载")
-                        return self._download_images(uuid, item.filename(), output_dir, cookies, emit)
+                        return download_images_to_pdf(uuid, item.filename(), output_dir, [], emit)
 
                     # 若为 PDF 文件链接，直接下载并保存
                     try:
@@ -941,15 +854,14 @@ class ZBYSource(BaseSource):
                         # 显式禁用代理
                         r: Response = session.get(u, params={"searchText": kw, "q": kw, "keyword": kw}, timeout=10, proxies={"http": None, "https": None})
                         text = getattr(r, 'text', '') or ''
-                        
-                        # 1. 查找 immdoc 链接
-                        m = re.search(r'immdoc/([a-zA-Z0-9-]+)/doc', text)
-                        if m:
-                            uuid = m.group(1)
+
+                        # 使用工具函数查找 UUID
+                        uuid = extract_uuid_from_text(text)
+                        if uuid:
                             emit(f"ZBY: 发现资源 UUID: {uuid[:8]}...")
                             cookies = [{ 'name': c.name, 'value': c.value } for c in session.cookies]
-                            return self._download_images(uuid, item.filename(), output_dir, cookies, emit)
-                        
+                            return download_images_to_pdf(uuid, item.filename(), output_dir, cookies, emit)
+
                         # 2. 查找详情页链接并跟进
                         # 匹配模式如 /standard/detail/566393 或 #/standard/detail/566393
                         detail_ids = re.findall(r'detail/(\d+)', text)
@@ -959,12 +871,11 @@ class ZBYSource(BaseSource):
                                 emit(f"ZBY: 尝试跟进详情页...")
                                 rd: Response = session.get(detail_url, timeout=8, proxies={"http": None, "https": None})
                                 td = getattr(rd, 'text', '') or ''
-                                m2 = re.search(r'immdoc/([a-zA-Z0-9-]+)/doc', td)
-                                if m2:
-                                    uuid = m2.group(1)
-                                    emit(f"ZBY: 从详情页发现资源 UUID: {uuid[:8]}...")
+                                uuid2 = extract_uuid_from_text(td)
+                                if uuid2:
+                                    emit(f"ZBY: 从详情页发现资源 UUID: {uuid2[:8]}...")
                                     cookies = [{ 'name': c.name, 'value': c.value } for c in session.cookies]
-                                    return self._download_images(uuid, item.filename(), output_dir, cookies, emit)
+                                    return download_images_to_pdf(uuid2, item.filename(), output_dir, cookies, emit)
                             except Exception:
                                 continue
                     except Exception:
