@@ -9,7 +9,10 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(.venvScriptspython.exe:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(ls:*)"
     ]
   }
 }
